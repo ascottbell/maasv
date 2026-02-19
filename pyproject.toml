@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maasv"
+version = "0.1.1"
+description = "Cognition layer for AI agents — memory lifecycle engine"
+requires-python = ">=3.11"
+license = {text = "BSL-1.1"}
+authors = [
+    {name = "Adam Bell", email = "adam@maasv.ai"},
+]
+readme = "README.md"
+keywords = ["memory", "knowledge-graph", "ai-agents", "cognition", "rag"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "sqlite-vec>=0.1.1,<1.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.50"]
+voyage = ["voyageai>=0.3"]
+all = [
+    "maasv[server,anthropic,voyage]",
+]
+reranking = [
+    "sentence-transformers>=2.0.0",
+    # NOTE: pulls in torch (~2GB). Only needed if cross_encoder_enabled=True.
+]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+maasv-server = "maasv.server.main:run"
+
+[project.urls]
+Homepage = "https://maasv.com"
+Repository = "https://github.com/ascottbell/maasv"
+
+[tool.setuptools.packages.find]
+include = ["maasv*"]
+exclude = ["scripts*", "examples*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

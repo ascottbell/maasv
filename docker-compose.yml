@@ -1,0 +1,13 @@
+services:
+  maasv-server:
+    build: .
+    ports:
+      - "18790:18790"
+    volumes:
+      - maasv-data:/data
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  maasv-data:

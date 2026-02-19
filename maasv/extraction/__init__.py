@@ -1,0 +1,1 @@
+from maasv.extraction.entity_extraction import extract_and_store_entities
