@@ -125,7 +125,11 @@ def delete(memory_id: str):
     """Permanently delete a memory."""
     from maasv.core.store import delete_memory
 
-    deleted = delete_memory(memory_id)
+    try:
+        deleted = delete_memory(memory_id)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")
 
