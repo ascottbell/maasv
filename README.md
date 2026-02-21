@@ -22,7 +22,7 @@ Most memory tools store and retrieve. That's two steps. maasv owns six:
 
 **Consolidate.** During idle time, maasv merges near-duplicates, clusters related memories, resolves vague references to specific entities, and pre-computes common graph paths. Your agent's understanding gets sharper while nobody's using it.
 
-**Retrieve.** Three signals fused together: dense vector search (semantic similarity), BM25 keyword matching (exact terms via FTS5), and graph connectivity (1-hop entity expansion). Merged with Reciprocal Rank Fusion, optionally reranked by a cross-encoder. This is how your agent finds the thing it didn't know it was looking for.
+**Retrieve.** Three signals fused together: dense vector search (semantic similarity), BM25 keyword matching (exact terms via FTS5), and graph connectivity (1-hop entity expansion). Merged with Reciprocal Rank Fusion, optionally reranked by a cross-encoder. Each result carries a cosine similarity score so callers can filter noise — a nonsense query returns results near 0.3, while a meaningful match scores 0.6+. This is how your agent finds the thing it didn't know it was looking for.
 
 **Decay.** Memories that stop being accessed lose confidence over time. Protected categories (identity, family, core preferences) are exempt. Everything else has to earn its place.
 
@@ -141,6 +141,10 @@ store_memory("ProjectX deadline is March 15", category="project", subject="Proje
 
 # Retrieve (3-signal fusion: vector + keyword + graph)
 results = find_similar_memories("when is ProjectX due?", limit=5)
+for r in results:
+    print(f"{r['relevance']:.2f}  {r['content']}")
+    # 0.78  ProjectX deadline is March 15
+    # Each result includes a cosine similarity score (0-1)
 
 # Or get tiered context to inject into your LLM prompt
 context = get_tiered_memory_context(query="meeting prep for Alice")
