@@ -414,6 +414,45 @@ def init_db():
 
     run_migration(db, 4, "Dedup constraints — unique indexes on entities and active relationships", _migrate_dedup_constraints)
 
+    # --- Migration 5: Learned ranker tables ---
+    def _migrate_learned_ranker(db):
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS retrieval_log (
+                id TEXT PRIMARY KEY,
+                query_text TEXT NOT NULL,
+                query_embedding_hash TEXT,
+                timestamp TEXT NOT NULL,
+                candidate_count INTEGER,
+                returned_ids TEXT NOT NULL,
+                features TEXT NOT NULL,
+                outcomes TEXT,
+                outcome_recorded_at TEXT
+            )
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_retrieval_log_timestamp
+            ON retrieval_log(timestamp)
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_retrieval_log_outcomes
+            ON retrieval_log(outcomes)
+            WHERE outcomes IS NULL
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS learned_ranker_weights (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                weights_json TEXT NOT NULL,
+                feature_names TEXT NOT NULL,
+                trained_at TEXT,
+                training_samples INTEGER,
+                training_loss REAL,
+                ndcg_score REAL,
+                version INTEGER DEFAULT 1
+            )
+        """)
+
+    run_migration(db, 5, "Learned ranker — retrieval_log and weights tables", _migrate_learned_ranker)
+
     db.close()
 
     # Set restrictive file permissions on the database (owner read/write only).

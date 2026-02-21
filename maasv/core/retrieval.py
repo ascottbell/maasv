@@ -623,10 +623,18 @@ def find_similar_memories(
         bm25_ids = {r['id'] for r in bm25_results}
         graph_ids = {r['id'] for r in graph_results}
 
-        # === Importance scoring (shared by both CE and fallback paths) ===
-        primary, supplementary = _importance_score(
+        # === Importance scoring ===
+        # Try learned ranker first; falls back to heuristic formula.
+        from maasv.core.learned_ranker import score as learned_score
+        lr_result = learned_score(
             candidates, protected, now, vector_distances, bm25_ids, graph_ids
         )
+        if lr_result is not None:
+            primary, supplementary = lr_result
+        else:
+            primary, supplementary = _importance_score(
+                candidates, protected, now, vector_distances, bm25_ids, graph_ids
+            )
 
         if ce_scores is not None:
             # === Two-stage reranking ===
@@ -766,6 +774,22 @@ def find_similar_memories(
             mem.pop('distance', None)
 
         _record_memory_access(db, [r['id'] for r in result])
+
+        # Log retrieval for learned ranker training data (best-effort)
+        try:
+            from maasv.core.learned_ranker import log_retrieval
+            log_retrieval(
+                query=query,
+                candidates=candidates,
+                returned_ids=[r['id'] for r in result],
+                vector_distances=vector_distances,
+                bm25_ids=bm25_ids,
+                graph_ids=graph_ids,
+                protected=protected,
+                now=now,
+            )
+        except Exception:
+            pass
 
     return result
 
