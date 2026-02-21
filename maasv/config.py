@@ -58,6 +58,9 @@ class MaasvConfig:
     # Hygiene log path (optional — if None, no log file written)
     hygiene_log_path: Optional[Path] = None
 
+    # Extra predicates to extend VALID_PREDICATES (for host apps with existing data)
+    extra_predicates: set[str] = field(default_factory=set)
+
     # Action type groupings for wisdom "similar enough" matching
     action_families: dict[str, list[str]] = field(default_factory=dict)
 

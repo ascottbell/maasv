@@ -28,6 +28,8 @@ Most memory tools store and retrieve. That's two steps. maasv owns six:
 
 **Forget.** Stale, low-confidence memories are pruned. Orphaned entities are cleaned up. The knowledge graph stays lean. Without active forgetting, memory systems tend to get noisier over time — maasv gets sharper.
 
+**Learn.** *(Experimental — shadow mode by default.)* A small neural network (81 parameters) trains on your agent's actual retrieval patterns — which memories get re-accessed after being surfaced, and which get ignored. Over time, retrieval adapts to your agent's usage rather than relying solely on static heuristics. The ranker starts in shadow mode: it logs comparisons between its ranking and the default, but doesn't affect results. Once enough labeled data accumulates (100+ samples), you can flip it to active mode. To disable entirely: `learned_ranker_enabled=False` in config.
+
 ## Install
 
 ```bash
@@ -194,6 +196,13 @@ config = MaasvConfig(
     cross_encoder_enabled=False,
     cross_encoder_model="cross-encoder/ms-marco-MiniLM-L-6-v2",
 
+    # Learned ranker (experimental — shadow mode by default)
+    learned_ranker_enabled=True,           # False to disable entirely
+    learned_ranker_shadow_mode=True,       # True = log comparisons only, don't affect results
+    learned_ranker_min_samples=100,        # Labeled samples needed before model activates
+    learned_ranker_lr=0.01,                # Training learning rate
+    learned_ranker_max_steps=50,           # Max training steps per cycle
+
     # Sleep worker timing
     idle_threshold_seconds=30,
     idle_check_interval=5,
@@ -253,6 +262,8 @@ maasv.init(config, llm, embed)       or       maasv-server (HTTP API)
     |   +-- wisdom.py       Experiential learning    |   +-- providers.py  LLM/embed factories
     |   +-- db.py           SQLite + sqlite-vec      |   +-- routers/      HTTP endpoints
     |   +-- reranker.py     Cross-encoder            |
+    |   +-- learned_ranker.py  Neural reranker (exp) |
+    |   +-- autograd.py     Backprop engine          |
     |                                               |
     +-- extraction/                                 (server imports core/ directly)
     |   +-- entity_extraction.py
@@ -263,6 +274,7 @@ maasv.init(config, llm, embed)       or       maasv-server (HTTP API)
     |   +-- reorganize.py     Graph optimization
     |   +-- inference.py      Entity resolution
     |   +-- review.py         Conversation analysis
+    |   +-- learn.py          Ranker training (exp)
     |
     +-- providers/
         +-- ollama.py         Built-in Ollama embeddings
