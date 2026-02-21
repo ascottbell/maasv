@@ -41,7 +41,14 @@ VALID_PREDICATES = {
     "caused_by", "led_to", "resulted_in", "motivated_by",
     "enabled_by", "blocked_by", "chose_over",
     # Inference
-    "has_reference",
+    "has_reference", "inferred_as",
+    # Integration / usage
+    "integrates_with", "integrated_via", "used_for", "uses",
+    "monitors", "integrates",
+    # Ownership / property
+    "owns_pet", "has_property_in",
+    # Social
+    "interested_in", "collaborates_with",
 }
 
 
@@ -422,8 +429,10 @@ def add_relationship(
     if object_id is None and object_value is None:
         raise ValueError("Must provide either object_id or object_value")
 
-    # Task 5: Predicate allowlist
-    if predicate not in VALID_PREDICATES:
+    # Task 5: Predicate allowlist (extended by config.extra_predicates)
+    import maasv
+    allowed = VALID_PREDICATES | maasv.get_config().extra_predicates
+    if predicate not in allowed:
         raise ValueError(f"Unknown predicate: {predicate!r}")
 
     # Task 4: Confidence clamping
@@ -681,7 +690,9 @@ def update_relationship_value(
 
     Uses a single connection/transaction: find current -> expire old -> insert new.
     """
-    if predicate not in VALID_PREDICATES:
+    import maasv
+    allowed = VALID_PREDICATES | maasv.get_config().extra_predicates
+    if predicate not in allowed:
         raise ValueError(f"Unknown predicate: {predicate!r}")
 
     new_value = str(new_value)[:MAX_OBJECT_VALUE_LENGTH]
