@@ -45,6 +45,13 @@ class MaasvConfig:
     idle_threshold_seconds: int = 30
     idle_check_interval: int = 5
 
+    # Learned ranker
+    learned_ranker_enabled: bool = True
+    learned_ranker_min_samples: int = 100
+    learned_ranker_shadow_mode: bool = True
+    learned_ranker_lr: float = 0.01
+    learned_ranker_max_steps: int = 50
+
     # Known entities for extraction prompts (name -> type)
     known_entities: dict[str, str] = field(default_factory=dict)
 
