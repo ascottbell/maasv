@@ -764,14 +764,19 @@ def find_similar_memories(
                         if best_candidate and best_score[0] > 0:
                             result[-1] = best_candidate
 
-        # Clean up internal scoring fields
+        # Clean up internal scoring fields, expose relevance
         for mem in result:
+            # Expose relevance from L2 distance on normalized vectors.
+            # For unit vectors: L2² = 2 - 2·cos(θ), so cos(θ) = 1 - L2²/2.
+            dist = mem.pop('distance', None)
+            if dist is not None:
+                cosine_sim = 1.0 - (dist * dist) / 2.0
+                mem['relevance'] = round(cosine_sim, 4)
             mem.pop('_score', None)
             mem.pop('_imp_score', None)
             mem.pop('rrf_score', None)
             mem.pop('bm25_score', None)
             mem.pop('graph_score', None)
-            mem.pop('distance', None)
 
         _record_memory_access(db, [r['id'] for r in result])
 
