@@ -20,7 +20,7 @@ import threading
 from maasv.config import MaasvConfig
 from maasv.protocols import LLMProvider, EmbedProvider
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 _log = logging.getLogger(__name__)
 
@@ -49,8 +49,8 @@ def _get_provider_class(name: str) -> type:
 
 def init(
     config: MaasvConfig,
-    llm: LLMProvider,
-    embed: "EmbedProvider | str",
+    llm: "LLMProvider | None" = None,
+    embed: "EmbedProvider | str | None" = None,
     *,
     embed_model: str = "",
     embed_base_url: str = "",
@@ -62,19 +62,26 @@ def init(
 
     Args:
         config: Database path, model names, tuning parameters
-        llm: Provider for LLM calls (entity extraction, inference, review)
-        embed: Provider for text embeddings, or a shortcut string (e.g. "ollama")
+        llm: Provider for LLM calls (entity extraction, inference, review).
+             Optional — only required for extraction/inference features.
+        embed: Provider for text embeddings, or a shortcut string (e.g. "ollama").
+               Defaults to OllamaEmbed with qwen3-embedding:8b if not provided.
         embed_model: Override the default model when using a shortcut
         embed_base_url: Override the default base URL when using a shortcut
     """
     global _config, _llm, _embed, _initialized
 
+    # Default to Ollama embedding if not provided
+    if embed is None:
+        embed = "ollama"
+
     # Resolve string shortcut to provider instance
     if isinstance(embed, str):
         cls = _get_provider_class(embed)
         kwargs: dict = {"dims": config.embed_dims}
-        if embed_model:
-            kwargs["model"] = embed_model
+        model = embed_model or config.embed_model
+        if model:
+            kwargs["model"] = model
         if embed_base_url:
             kwargs["base_url"] = embed_base_url
         embed = cls(**kwargs)

@@ -29,12 +29,19 @@ def _init_maasv():
     )
 
     llm = create_llm(settings.llm_provider, settings.llm_api_key, settings.llm_model)
-    embed = create_embed(settings.embed_provider, settings.embed_api_key, settings.embed_model)
+    embed = create_embed(
+        settings.embed_provider,
+        api_key=settings.embed_api_key,
+        model=settings.embed_model,
+        base_url=getattr(settings, "embed_base_url", ""),
+        dims=settings.embed_dims,
+    )
 
     maasv.init(config=config, llm=llm, embed=embed)
     logger.info(
-        "maasv initialized: db=%s, embed_dims=%d, llm=%s, embed=%s",
-        config.db_path, config.embed_dims, settings.llm_provider, settings.embed_provider,
+        "maasv initialized: db=%s, embed_dims=%d, llm=%s, embed=%s/%s",
+        config.db_path, config.embed_dims, settings.llm_provider,
+        settings.embed_provider, settings.embed_model,
     )
 
 
@@ -49,7 +56,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="maasv-server",
     description="HTTP API for the maasv cognition layer",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
     docs_url="/docs" if not settings.api_key else None,
     openapi_url="/openapi.json" if not settings.api_key else None,

@@ -418,7 +418,9 @@ def add_relationship(
     valid_from: Optional[str] = None,
     confidence: float = 1.0,
     source: Optional[str] = None,
-    metadata: Optional[dict] = None
+    metadata: Optional[dict] = None,
+    origin: Optional[str] = None,
+    origin_interface: Optional[str] = None,
 ) -> str:
     """Add a temporal relationship between entities.
 
@@ -483,12 +485,13 @@ def add_relationship(
         try:
             db.execute("""
                 INSERT INTO relationships
-                (id, subject_id, predicate, object_id, object_value, valid_from, confidence, source, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, subject_id, predicate, object_id, object_value, valid_from, confidence, source, metadata, origin, origin_interface)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 rel_id, subject_id, predicate, object_id, object_value,
                 valid_from, confidence, source,
-                json.dumps(metadata) if metadata else None
+                json.dumps(metadata) if metadata else None,
+                origin, origin_interface,
             ))
             db.commit()
         except sqlite3.IntegrityError:

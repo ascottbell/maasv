@@ -187,6 +187,7 @@ def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
         rows = db.execute("""
             SELECT m.id, m.content, m.category, m.subject, m.confidence,
                    m.created_at, m.metadata, m.importance, m.access_count,
+                   m.origin, m.origin_interface,
                    bm25(memories_fts, 10.0, 1.0, 5.0) as bm25_score
             FROM memories_fts f
             JOIN memories m ON f.rowid = m.rowid
@@ -381,6 +382,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 rows = db.execute("""
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
+                           m.origin, m.origin_interface,
                            1.0 as graph_score
                     FROM memories_fts f
                     JOIN memories m ON f.rowid = m.rowid
@@ -394,6 +396,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     rows = db.execute("""
                         SELECT m.id, m.content, m.category, m.subject, m.confidence,
                                m.created_at, m.metadata, m.importance, m.access_count,
+                               m.origin, m.origin_interface,
                                0.8 as graph_score
                         FROM memories_fts f
                         JOIN memories m ON f.rowid = m.rowid
@@ -413,6 +416,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     rows = db.execute("""
                         SELECT m.id, m.content, m.category, m.subject, m.confidence,
                                m.created_at, m.metadata, m.importance, m.access_count,
+                               m.origin, m.origin_interface,
                                0.8 as graph_score
                         FROM memories_fts f
                         JOIN memories m ON f.rowid = m.rowid
@@ -441,6 +445,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 rows = db.execute("""
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
+                           m.origin, m.origin_interface,
                            1.0 as graph_score
                     FROM memories_fts f
                     JOIN memories m ON f.rowid = m.rowid
@@ -480,6 +485,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 subject_rows = db.execute(f"""
                     SELECT DISTINCT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
+                           m.origin, m.origin_interface,
                            0.8 as graph_score
                     FROM memories m
                     WHERE m.superseded_by IS NULL
@@ -539,7 +545,9 @@ def find_similar_memories(
     query: str,
     limit: int = 5,
     category: Optional[str] = None,
-    subject: Optional[str] = None
+    subject: Optional[str] = None,
+    origin: Optional[str] = None,
+    origin_interface: Optional[str] = None,
 ) -> list[dict]:
     """
     Find memories using 3-signal retrieval with cross-encoder reranking.
@@ -549,7 +557,7 @@ def find_similar_memories(
     2. BM25 keyword matching (FTS5) -> top N candidates
     3. Graph connectivity (entity mentions -> subject match) -> top N candidates
     4. RRF fusion -> unified candidate pool
-    5. Filter by category/subject (if specified)
+    5. Filter by category/subject/origin (if specified)
     6. Cross-encoder reranking (query-document relevance scoring)
        Fallback: importance-weighted formula if cross-encoder unavailable
     7. Diversity-aware selection (Jaccard dedup)
@@ -577,6 +585,7 @@ def find_similar_memories(
             SELECT
                 v.id, m.content, m.category, m.subject, m.confidence,
                 m.created_at, m.metadata, m.importance, m.access_count,
+                m.origin, m.origin_interface,
                 distance
             FROM memory_vectors v
             JOIN memories m ON v.id = m.id
@@ -607,11 +616,15 @@ def find_similar_memories(
         else:
             candidates = _reciprocal_rank_fusion(active_signals, k=60)
 
-        # === Filter by category/subject ===
+        # === Filter by category/subject/origin ===
         if category:
             candidates = [c for c in candidates if c['category'] == category]
         if subject:
             candidates = [c for c in candidates if c.get('subject') and subject.lower() in c['subject'].lower()]
+        if origin:
+            candidates = [c for c in candidates if c.get('origin') == origin]
+        if origin_interface:
+            candidates = [c for c in candidates if c.get('origin_interface') == origin_interface]
 
         # === Reranking ===
         # Try cross-encoder first (best quality). Falls back to importance-weighted

@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maasv"
-version = "0.1.1"
-description = "Cognition layer for AI agents — memory lifecycle engine"
+version = "0.2.0"
+description = "Your cognition layer — one memory, every agent, every source"
 requires-python = ">=3.11"
 license = {text = "BSL-1.1"}
 authors = [
     {name = "Adam Bell", email = "adam@maasv.ai"},
 ]
 readme = "README.md"
-keywords = ["memory", "knowledge-graph", "ai-agents", "cognition", "rag"]
+keywords = ["memory", "knowledge-graph", "ai-agents", "cognition", "multi-agent", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

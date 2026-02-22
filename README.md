@@ -2,15 +2,19 @@
   <img src="maasvlogo.png" alt="maasv" width="500">
 </p>
 
-**A cognition layer for AI agents.**
+**Your cognition layer. One memory. Every agent. Every source.**
 
-maasv gives your agent a real memory — not just storage and retrieval, but a full lifecycle that extracts, structures, connects, consolidates, and prunes knowledge over time. Entities and relationships are pulled from conversations, organized into a knowledge graph, and actively maintained in the background. What comes back out when you query isn't just relevant documents — it's structured understanding with context.
+maasv gives you a persistent understanding that works across all your AI agents, tools, and data sources. Not just storage and retrieval — a full lifecycle that extracts, structures, connects, consolidates, and prunes knowledge over time. Entities and relationships are pulled from conversations, organized into a knowledge graph, and actively maintained in the background. What comes back isn't just relevant documents — it's structured understanding with context.
+
+People use ChatGPT AND Claude AND Gemini for different strengths. Even within Claude: Desktop, Code, and Codex are three separate sessions. maasv makes them all share cognition. Stop re-explaining yourself.
 
 ## What it does
 
-Your agent remembers that the person you're meeting tomorrow was mentioned in a conversation three weeks ago, and surfaces the context before you ask. It connects a complaint from a customer in March to a feature request from their team in June. It knows you tried a particular approach before and it didn't work, so it suggests something different this time.
+Your tools come and go. You switch CRMs, cancel subscriptions, startups shut down. maasv is yours — one SQLite file that persists across all of it.
 
-The knowledge graph grows, consolidates, and prunes itself over time. Data comes in from disparate sources, gets structured into entities and relationships, and the connections between them become queryable. Your agent builds perspective across conversations, not just within them.
+Any source that can make an HTTP call or connect via MCP can write to maasv. AI agents, CRM syncs, calendar integrations, health data, automation tools — they all feed into the same cognition layer. Every memory carries provenance: which system wrote it and through which interface, so you always know where knowledge came from.
+
+Your agent remembers that the person you're meeting tomorrow was mentioned in a conversation three weeks ago, and surfaces the context before you ask. It connects a complaint from a customer in March to a feature request from their team in June. It knows you tried a particular approach before and it didn't work, so it suggests something different this time.
 
 ## The lifecycle
 
@@ -18,17 +22,28 @@ Most memory tools store and retrieve. That's two steps. maasv owns six:
 
 **Extract.** Entities, relationships, and facts are pulled from conversations by your LLM. People, places, projects, technologies, and how they connect to each other. Not keywords. Structure.
 
-**Store.** Memories are embedded, categorized, and deduplicated on the way in. Each one carries metadata: confidence, importance, subject, and access history.
+**Store.** Memories are embedded, categorized, and deduplicated on the way in. Each one carries metadata: confidence, importance, subject, origin, and access history.
 
-**Consolidate.** During idle time, maasv merges near-duplicates, clusters related memories, resolves vague references to specific entities, and pre-computes common graph paths. Your agent's understanding gets sharper while nobody's using it.
+**Consolidate.** During idle time, maasv merges near-duplicates, clusters related memories, resolves vague references to specific entities, and pre-computes common graph paths. Your understanding gets sharper while nobody's using it.
 
-**Retrieve.** Three signals fused together: dense vector search (semantic similarity), BM25 keyword matching (exact terms via FTS5), and graph connectivity (1-hop entity expansion). Merged with Reciprocal Rank Fusion, optionally reranked by a cross-encoder. Each result carries a cosine similarity score so callers can filter noise — a nonsense query returns results near 0.3, while a meaningful match scores 0.6+. This is how your agent finds the thing it didn't know it was looking for.
+**Retrieve.** Three signals fused together: dense vector search (semantic similarity), BM25 keyword matching (exact terms via FTS5), and graph connectivity (1-hop entity expansion). Merged with Reciprocal Rank Fusion, optionally reranked by a cross-encoder. Filterable by category, subject, origin, or origin interface. Each result carries a cosine similarity score so callers can filter noise — a nonsense query returns results near 0.3, while a meaningful match scores 0.6+.
 
 **Decay.** Memories that stop being accessed lose confidence over time. Protected categories (identity, family, core preferences) are exempt. Everything else has to earn its place.
 
 **Forget.** Stale, low-confidence memories are pruned. Orphaned entities are cleaned up. The knowledge graph stays lean. Without active forgetting, memory systems tend to get noisier over time — maasv gets sharper.
 
-**Learn.** *(Experimental — shadow mode by default.)* A small neural network (81 parameters) trains on your agent's actual retrieval patterns — which memories get re-accessed after being surfaced, and which get ignored. Over time, retrieval adapts to your agent's usage rather than relying solely on static heuristics. The ranker starts in shadow mode: it logs comparisons between its ranking and the default, but doesn't affect results. Once enough labeled data accumulates (100+ samples), you can flip it to active mode. To disable entirely: `learned_ranker_enabled=False` in config.
+**Learn.** *(Experimental — shadow mode by default.)* A small neural network (81 parameters) trains on actual retrieval patterns — which memories get re-accessed after being surfaced, and which get ignored. Over time, retrieval adapts to usage rather than relying solely on static heuristics. The ranker starts in shadow mode: it logs comparisons between its ranking and the default, but doesn't affect results. Once enough labeled data accumulates (100+ samples), you can flip it to active mode. To disable entirely: `learned_ranker_enabled=False` in config.
+
+## Prerequisites
+
+- **Python 3.11+**
+- **[Ollama](https://ollama.com)** running locally with the embedding model pulled:
+
+```bash
+ollama pull qwen3-embedding:8b
+```
+
+maasv uses [Qwen3-Embedding-8B](https://huggingface.co/Qwen/Qwen3-Embedding-8B) for embeddings by default. It runs locally via Ollama — no API keys, no cloud calls, your data stays on your machine. The model supports Matryoshka dimensionality reduction, so maasv truncates to 1024 dimensions and L2-normalizes automatically.
 
 ## Install
 
@@ -36,69 +51,37 @@ Most memory tools store and retrieve. That's two steps. maasv owns six:
 pip install maasv
 ```
 
-One dependency: `sqlite-vec` for vector search. Everything runs locally in a single SQLite database. No external services, no API keys for the engine itself.
+One Python dependency: `sqlite-vec` for vector search. Everything runs in a single SQLite database.
 
 Optional extras:
 ```bash
-pip install "maasv[server]"              # HTTP server (FastAPI)
-pip install "maasv[server,anthropic,voyage]"  # Server + cloud providers
-pip install "maasv[reranking]"           # Cross-encoder reranking (~2GB torch)
+pip install "maasv[server]"       # HTTP server (FastAPI + uvicorn)
+pip install "maasv[anthropic]"    # Anthropic LLM provider
+pip install "maasv[openai]"       # OpenAI LLM provider
+pip install "maasv[reranking]"    # Cross-encoder reranking (~2GB torch)
 ```
 
 ## Quick start
 
-maasv requires an LLM provider (for entity extraction) and an embedding provider (for vector search). It ships with a built-in Ollama provider for fully local embeddings, or you can bring your own.
+### 1. Initialize
 
-### 1. Set up providers
-
-**Fastest path — local embeddings with Ollama:**
-
-maasv includes a built-in embedding provider backed by [Ollama](https://ollama.com) and [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-8B). Qwen3-Embedding supports Matryoshka dimensionality reduction, so maasv can truncate to any dimension (default 1024) and L2-normalize automatically. No API keys needed for embeddings.
+maasv defaults to Ollama with qwen3-embedding:8b for embeddings. You only need to provide an LLM provider if you want entity extraction.
 
 ```python
+from pathlib import Path
 import maasv
 from maasv.config import MaasvConfig
 
-config = MaasvConfig(db_path=Path("memory.db"), embed_dims=1024)
-maasv.init(config=config, llm=MyLLM(), embed="ollama")
+config = MaasvConfig(db_path=Path("memory.db"))
+maasv.init(config=config, llm=MyLLM())
 ```
 
-Pull the model first: `ollama pull qwen3-embedding:8b`
+That's it. One required config field: `db_path`. maasv creates the database, runs migrations, records the embedding model, and is ready to use.
 
-You still need an LLM provider for entity extraction — see below.
-
-**With OpenAI:**
+You still need an LLM provider for entity extraction. Any provider that implements `call(messages, model, max_tokens, source) -> str` works:
 
 ```python
-import openai
-
-class MyLLM:
-    def __init__(self):
-        self.client = openai.OpenAI()
-
-    def call(self, messages, model, max_tokens, source=""):
-        response = self.client.chat.completions.create(
-            model=model, max_tokens=max_tokens, messages=messages
-        )
-        return response.choices[0].message.content
-
-class MyEmbed:
-    def __init__(self):
-        self.client = openai.OpenAI()
-
-    def embed(self, text):
-        response = self.client.embeddings.create(
-            model="text-embedding-3-large", input=text
-        )
-        return response.data[0].embedding
-
-    def embed_query(self, text):
-        return self.embed(text)
-```
-
-**With Anthropic:**
-
-```python
+# With Anthropic
 import anthropic
 
 class MyLLM:
@@ -112,57 +95,74 @@ class MyLLM:
         return response.content[0].text
 ```
 
-Anthropic doesn't have a native embeddings API — pair it with any embedding provider (OpenAI, Voyage AI, Ollama, or a local model like `sentence-transformers`). The LLM and embedding providers don't need to come from the same vendor.
-
-Any provider works. The protocol is just `call()` for LLM and `embed()`/`embed_query()` for embeddings. See [`maasv/protocols.py`](maasv/protocols.py) for the full type signatures.
-
-### 2. Initialize
-
 ```python
-from pathlib import Path
-import maasv
-from maasv.config import MaasvConfig
+# With OpenAI
+import openai
 
-config = MaasvConfig(db_path=Path("memory.db"), embed_dims=3072)  # 3072 for text-embedding-3-large
-maasv.init(config=config, llm=MyLLM(), embed=MyEmbed())
+class MyLLM:
+    def __init__(self):
+        self.client = openai.OpenAI()
+
+    def call(self, messages, model, max_tokens, source=""):
+        response = self.client.chat.completions.create(
+            model=model, max_tokens=max_tokens, messages=messages
+        )
+        return response.choices[0].message.content
 ```
 
-That's it. maasv creates the database, runs migrations, and is ready to use. The only required config is `db_path` and `embed_dims` (must match your embedding model's output dimensions).
+If you don't need entity extraction, you can skip the LLM entirely:
 
-### 3. Store and retrieve
+```python
+maasv.init(config=config)  # embedding-only mode
+```
+
+### 2. Store and retrieve
 
 ```python
 from maasv.core.store import store_memory
 from maasv.core.retrieval import find_similar_memories, get_tiered_memory_context
 
-# Store
-store_memory("Alice prefers morning meetings", category="preferences", subject="Alice")
-store_memory("ProjectX deadline is March 15", category="project", subject="ProjectX")
+# Store — with origin tracking
+store_memory(
+    "Alice prefers morning meetings",
+    category="preference",
+    subject="Alice",
+    origin="claude",
+    origin_interface="claude-code",
+)
+store_memory(
+    "ProjectX deadline is March 15",
+    category="project",
+    subject="ProjectX",
+    origin="openai",
+    origin_interface="chatgpt-ios",
+)
 
 # Retrieve (3-signal fusion: vector + keyword + graph)
 results = find_similar_memories("when is ProjectX due?", limit=5)
 for r in results:
-    print(f"{r['relevance']:.2f}  {r['content']}")
-    # 0.78  ProjectX deadline is March 15
-    # Each result includes a cosine similarity score (0-1)
+    print(f"{r['relevance']:.2f}  [{r.get('origin', '?')}] {r['content']}")
 
-# Or get tiered context to inject into your LLM prompt
+# Filter by origin
+claude_only = find_similar_memories("Alice", limit=5, origin="claude")
+
+# Get tiered context to inject into your LLM prompt
 context = get_tiered_memory_context(query="meeting prep for Alice")
 ```
 
-### 4. Build the knowledge graph
+### 3. Build the knowledge graph
 
 ```python
 from maasv.core.graph import find_or_create_entity, add_relationship
 
 alice = find_or_create_entity("Alice", "person")
 project_x = find_or_create_entity("ProjectX", "project")
-add_relationship(alice, "works_on", object_id=project_x)
+add_relationship(alice, "works_on", object_id=project_x, origin="claude", origin_interface="codex")
 ```
 
 Once entities exist, retrieval automatically expands queries through graph connections — search for "Alice" and you'll also surface ProjectX context.
 
-### 5. Background lifecycle (optional)
+### 4. Background lifecycle (optional)
 
 ```python
 from maasv.lifecycle.worker import start_idle_monitor
@@ -174,26 +174,47 @@ The sleep worker watches for idle periods and runs maintenance: dedup, consolida
 
 See [`examples/quickstart.py`](examples/quickstart.py) for a complete runnable example with mock providers (no API keys needed).
 
+## Multi-agent / multi-source
+
+maasv tracks where every memory comes from via two fields:
+
+| Field | Purpose | Examples |
+|-------|---------|----------|
+| `origin` | What system created this | `claude`, `openai`, `salesforce`, `apple-health` |
+| `origin_interface` | Specific client/interface | `claude-code`, `claude-desktop`, `codex`, `chatgpt-ios` |
+
+This enables:
+
+- **Attribution**: "Where did I learn this?" — every memory has provenance.
+- **Filtering**: "Show me everything from Claude Code about this project."
+- **Decision tracing**: "I discussed this in Desktop, then Codex implemented it" — full lineage from metadata alone.
+- **Future conflict detection**: When two origins disagree about a fact, maasv can surface the contradiction.
+
+Any system that can make an HTTP call can write to maasv — AI agents via MCP, CRMs via REST API, automation tools via webhooks. The `origin` and `origin_interface` fields are optional and nullable for backward compatibility.
+
 ## Configuration
 
-Only `db_path` and `embed_dims` are required. Everything else has sensible defaults.
+Only `db_path` is required. Everything else has sensible defaults.
 
 ```python
 from maasv.config import MaasvConfig
 
 config = MaasvConfig(
     db_path=Path("memory.db"),
-    embed_dims=1024,                    # Must match your embedding model
 
-    # Models (names passed to your LLMProvider -- it decides what to do with them)
+    # Embedding (recorded in DB — mismatches are caught on open)
+    embed_dims=1024,                        # Must match your embedding model
+    embed_model="qwen3-embedding:8b",       # Recorded in db_meta for safety
+
+    # Models (names passed to your LLMProvider — it decides what to do with them)
     extraction_model="claude-haiku-4-5-20251001",
     inference_model="claude-haiku-4-5-20251001",
     review_model="claude-haiku-4-5-20251001",
 
     # Hygiene tuning
-    similarity_threshold=0.95,          # Dedup threshold (cosine)
-    stale_days=30,                      # Prune after N days
-    min_confidence_threshold=0.5,       # Prune below this confidence
+    similarity_threshold=0.95,              # Dedup threshold (cosine)
+    stale_days=30,                          # Prune after N days
+    min_confidence_threshold=0.5,           # Prune below this confidence
     protected_categories={"identity", "family"},  # Never auto-delete
 
     # Cross-encoder (opt-in)
@@ -201,11 +222,11 @@ config = MaasvConfig(
     cross_encoder_model="cross-encoder/ms-marco-MiniLM-L-6-v2",
 
     # Learned ranker (experimental — shadow mode by default)
-    learned_ranker_enabled=True,           # False to disable entirely
-    learned_ranker_shadow_mode=True,       # True = log comparisons only, don't affect results
-    learned_ranker_min_samples=100,        # Labeled samples needed before model activates
-    learned_ranker_lr=0.01,                # Training learning rate
-    learned_ranker_max_steps=50,           # Max training steps per cycle
+    learned_ranker_enabled=True,            # False to disable entirely
+    learned_ranker_shadow_mode=True,        # True = log comparisons only
+    learned_ranker_min_samples=100,         # Labeled samples before activation
+    learned_ranker_lr=0.01,                 # Training learning rate
+    learned_ranker_max_steps=50,            # Max training steps per cycle
 
     # Sleep worker timing
     idle_threshold_seconds=30,
@@ -216,14 +237,24 @@ config = MaasvConfig(
 )
 ```
 
+### Custom embedding providers
+
+maasv defaults to Ollama, but any provider implementing `embed(text) -> list[float]` and `embed_query(text) -> list[float]` works:
+
+```python
+maasv.init(config=config, llm=MyLLM(), embed=MyCustomEmbed())
+```
+
+The `EmbedProvider` protocol is defined in [`maasv/protocols.py`](maasv/protocols.py). When using a custom provider, set `embed_dims` and `embed_model` in your config to match — maasv records the model name in the database and will error if you later open it with a different model configured.
+
 ## HTTP Server
 
-maasv includes an optional HTTP server for language-agnostic access. Install with the `server` extra:
+maasv includes an HTTP server for language-agnostic access:
 
 ```bash
-pip install "maasv[server,anthropic,voyage]"
+pip install "maasv[server]"
 cp server.env.example .env
-# Fill in API keys
+# Edit .env — at minimum, set MAASV_LLM_API_KEY
 maasv-server
 ```
 
@@ -231,7 +262,7 @@ Server starts on `http://127.0.0.1:18790`. API docs at `/docs` (disabled when au
 
 ### Auth
 
-Set `MAASV_API_KEY` to require an `X-Maasv-Key` header on all data endpoints. `/v1/health` stays public for load balancer probes. When auth is not set, all endpoints are open — intended for local development.
+Set `MAASV_API_KEY` to require an `X-Maasv-Key` header on all data endpoints. Token comparison uses `hmac.compare_digest` (constant-time). `/v1/health` stays public for load balancer probes. When auth is not set, all endpoints are open — intended for local development only.
 
 ### Endpoints
 
@@ -254,41 +285,39 @@ The container runs as a non-root user. Data is persisted to a named volume at `/
 ## Architecture
 
 ```
-Your Agent / HTTP Client
+Any Client (AI agent, CRM, automation tool, MCP)
     |
     v
-maasv.init(config, llm, embed)       or       maasv-server (HTTP API)
+maasv-server (HTTP API)           or        maasv.init(config) (library mode)
     |                                               |
-    +-- core/                                       +-- server/
-    |   +-- store.py        Memory CRUD             |   +-- main.py       FastAPI app
-    |   +-- retrieval.py    3-signal retrieval       |   +-- auth.py       API key auth
-    |   +-- graph.py        Knowledge graph          |   +-- config.py     Env-based config
-    |   +-- wisdom.py       Experiential learning    |   +-- providers.py  LLM/embed factories
-    |   +-- db.py           SQLite + sqlite-vec      |   +-- routers/      HTTP endpoints
-    |   +-- reranker.py     Cross-encoder            |
-    |   +-- learned_ranker.py  Neural reranker (exp) |
-    |   +-- autograd.py     Backprop engine          |
+    +-- server/                                     +-- core/
+    |   +-- main.py       FastAPI app               |   +-- store.py        Memory CRUD
+    |   +-- auth.py       API key auth              |   +-- retrieval.py    3-signal retrieval
+    |   +-- config.py     Env-based config          |   +-- graph.py        Knowledge graph
+    |   +-- providers.py  LLM/embed factories       |   +-- wisdom.py       Experiential learning
+    |   +-- routers/      HTTP endpoints            |   +-- db.py           SQLite + sqlite-vec
+    |                                               |   +-- reranker.py     Cross-encoder
+    +-- providers/                                  |   +-- learned_ranker.py  Neural reranker
+    |   +-- ollama.py     Built-in embeddings       |   +-- autograd.py     Backprop engine
     |                                               |
-    +-- extraction/                                 (server imports core/ directly)
-    |   +-- entity_extraction.py
-    |
-    +-- lifecycle/
-    |   +-- worker.py         Background jobs
-    |   +-- memory_hygiene.py Dedup, prune, consolidate
-    |   +-- reorganize.py     Graph optimization
-    |   +-- inference.py      Entity resolution
-    |   +-- review.py         Conversation analysis
-    |   +-- learn.py          Ranker training (exp)
-    |
-    +-- providers/
-        +-- ollama.py         Built-in Ollama embeddings
+    +-- extraction/                                 +-- lifecycle/
+    |   +-- entity_extraction.py                    |   +-- worker.py         Background jobs
+    |                                               |   +-- memory_hygiene.py Dedup, prune, consolidate
+    (server imports core/ directly)                 |   +-- reorganize.py     Graph optimization
+                                                    |   +-- inference.py      Entity resolution
+                                                    |   +-- review.py         Conversation analysis
+                                                    |   +-- learn.py          Ranker training
 ```
 
-Everything talks to one SQLite database. No Redis, no Postgres, no external services. The entire state of an agent's memory is a single `.db` file you can copy, back up, or throw away.
+Everything talks to one SQLite database. No Redis, no Postgres, no external vector DB. The entire state is a single `.db` file you can copy, back up, or throw away.
 
 ## Security Hardening
 
-maasv stores all data in a local SQLite database. There are no external network calls from the engine itself — your data stays on your machine. The following hardening measures are implemented across the codebase.
+maasv stores all data in a local SQLite database. Embeddings are computed locally via Ollama. There are no cloud calls from the engine — your data stays on your machine.
+
+### Embedding Model Safety
+
+The embedding model is recorded in the database on first init (`db_meta` table). If you later open the database with a different model configured, maasv raises a `RuntimeError` instead of silently corrupting the vector space. This prevents the subtle bugs that happen when vectors from different models end up in the same search index.
 
 ### LLM Output Validation
 
@@ -296,9 +325,9 @@ LLM responses are untrusted input. Every write path from extraction, review, and
 
 - **Entity name sanitization.** Character allowlist (alphanumeric, spaces, hyphens, underscores, periods) applied at write time. Rejects names with shell metacharacters, control characters, or injection attempts.
 - **Cardinality caps.** Max 20 entities, 30 relationships, 20 insights, and 20 inferences per extraction call. Prevents a single hallucinated response from flooding the graph.
-- **Field length caps.** Entity names capped at 200 chars, relationship values at 2K, content at 10K on all extraction paths.
+- **Field length caps.** Entity names capped at 200 chars, relationship values at 2K, content at 50K, metadata JSON at 10K on all write paths.
 - **Confidence clamping.** All confidence values clamped to `[0.0, 1.0]` on every write path — `store_memory`, `add_relationship`, and all extraction pipelines. Non-numeric values coerced to 0.5.
-- **Predicate allowlist.** Only predicates defined in `PREDICATE_OBJECT_TYPE` are accepted by `add_relationship()`. Unknown predicates from LLM output are rejected.
+- **Predicate allowlist.** Only predicates defined in `VALID_PREDICATES` are accepted by `add_relationship()`. Unknown predicates from LLM output are rejected. Extendable via `config.extra_predicates`.
 
 ### Atomic Operations
 
@@ -311,6 +340,7 @@ LLM responses are untrusted input. Every write path from extraction, review, and
 - **SQLite pragmas.** WAL mode, `busy_timeout=5000`, and `foreign_keys=ON` applied to every connection (both `get_db()` and `get_plain_db()`).
 - **Dedup constraints.** Database-level unique indexes on entities (`canonical_name`, `entity_type`) and partial unique indexes on active relationships. `IntegrityError` handling on `create_entity()` and `add_relationship()`.
 - **Safe backups.** `Connection.backup()` instead of `shutil.copy2` for WAL-safe snapshots. Backup retention handles `FileNotFoundError` for concurrent deletions.
+- **Schema migrations.** Numbered, idempotent migrations tracked in `schema_migrations` table. Safe to upgrade from any prior version.
 
 ### Thread Safety
 
@@ -348,6 +378,15 @@ All shared mutable state is protected by locks with double-checked locking:
 
 - **Context sent to LLMs.** Sleep-time pipelines (review, inference, extraction) intentionally send conversation context to your configured LLM. This is by design — it's how the cognition layer works. If you need content filtering before LLM transmission, implement it in your `LLMProvider`.
 - **Prompt injection via stored memories.** `get_tiered_memory_context()` returns a plaintext string for injection into system prompts. Stored memory content is not escaped or structured as JSON. Callers are responsible for prompt construction safety.
+- **Mobile agents.** MCP is not yet supported on mobile AI apps (Claude iOS, ChatGPT iOS, Gemini mobile). Mobile agents currently can't connect to maasv directly. This is a platform limitation, not a maasv limitation.
+
+## Upgrading from 0.1.x
+
+Database migrations run automatically. Two things to be aware of:
+
+1. **Embedding model tracking.** On first open with 0.2.0, maasv records your configured `embed_model` in the database. If you were using a model other than the default `qwen3-embedding:8b`, set `embed_model` in your config to match your actual model before upgrading, or you'll get a mismatch error on the second open.
+
+2. **Origin fields.** The new `origin` and `origin_interface` columns are nullable. Existing memories will have `NULL` for both, which is fine — filtering by origin simply won't match them unless you backfill.
 
 ## Status
 
@@ -359,4 +398,4 @@ Business Source License 1.1. Free for personal, internal, educational, and non-c
 
 ## Related
 
-- **[Doris](https://github.com/ascottbell/doris)** The AI assistant maasv was built for. If maasv is the cognition layer, Doris is the person using it.
+- **[Doris](https://github.com/ascottbell/doris)** — The AI assistant maasv was built for. If maasv is the cognition layer, Doris is the person using it.

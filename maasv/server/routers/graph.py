@@ -38,6 +38,8 @@ class AddRelationshipRequest(BaseModel):
     confidence: float = Field(1.0, ge=0.0, le=1.0)
     source: Optional[str] = Field(None, max_length=100)
     metadata: Optional[dict] = None
+    origin: Optional[str] = Field(None, max_length=100, description="What system created this")
+    origin_interface: Optional[str] = Field(None, max_length=100, description="Specific client/interface")
 
     _validate_metadata = field_validator("metadata")(_check_metadata_size)
 
@@ -119,5 +121,7 @@ def add_relationship(req: AddRelationshipRequest):
         confidence=req.confidence,
         source=req.source,
         metadata=req.metadata,
+        origin=req.origin,
+        origin_interface=req.origin_interface,
     )
     return {"relationship_id": rel_id}

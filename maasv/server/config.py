@@ -24,10 +24,11 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "claude-haiku-4-5-20251001"
 
-    # Embedding provider: "voyage", "openai", or "local"
-    embed_provider: str = "voyage"
+    # Embedding provider: "ollama" (default), "voyage", or "openai"
+    embed_provider: str = "ollama"
     embed_api_key: str = ""
-    embed_model: str = "voyage-3-lite"
+    embed_model: str = "qwen3-embedding:8b"
+    embed_base_url: str = "http://localhost:11434"
 
     # maasv tuning
     protected_categories: str = "identity,family"  # comma-separated
