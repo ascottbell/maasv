@@ -687,7 +687,9 @@ def update_relationship_value(
     subject_id: str,
     predicate: str,
     new_value: str,
-    source: Optional[str] = None
+    source: Optional[str] = None,
+    origin: Optional[str] = None,
+    origin_interface: Optional[str] = None,
 ) -> tuple[Optional[str], str]:
     """Update a relationship by expiring the old one and creating a new one.
 
@@ -721,9 +723,11 @@ def update_relationship_value(
         new_id = f"rel_{uuid.uuid4().hex[:12]}"
         db.execute("""
             INSERT INTO relationships
-            (id, subject_id, predicate, object_value, valid_from, confidence, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (new_id, subject_id, predicate, new_value, now_iso, 1.0, source))
+            (id, subject_id, predicate, object_value, valid_from, confidence, source,
+             origin, origin_interface)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (new_id, subject_id, predicate, new_value, now_iso, 1.0, source,
+              origin, origin_interface))
 
         db.commit()
 
