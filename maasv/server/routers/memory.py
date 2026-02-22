@@ -28,6 +28,8 @@ class StoreRequest(BaseModel):
     source: str = Field("manual", max_length=100, description="Where this came from")
     confidence: float = Field(1.0, ge=0.0, le=1.0, description="Confidence score")
     metadata: Optional[dict] = Field(None, description="Additional structured data")
+    origin: Optional[str] = Field(None, max_length=100, description="What system created this (e.g. claude, chatgpt, salesforce)")
+    origin_interface: Optional[str] = Field(None, max_length=100, description="Specific client/interface (e.g. claude-code, claude-desktop, codex)")
 
     _validate_metadata = field_validator("metadata")(_check_metadata_size)
 
@@ -41,6 +43,8 @@ class SearchRequest(BaseModel):
     limit: int = Field(5, ge=1, le=50, description="Max results")
     category: Optional[str] = Field(None, max_length=100, description="Filter by category")
     subject: Optional[str] = Field(None, max_length=200, description="Filter by subject")
+    origin: Optional[str] = Field(None, max_length=100, description="Filter by origin system")
+    origin_interface: Optional[str] = Field(None, max_length=100, description="Filter by origin interface")
 
 
 class ContextRequest(BaseModel):
@@ -72,6 +76,8 @@ def store(req: StoreRequest):
         source=req.source,
         confidence=req.confidence,
         metadata=req.metadata,
+        origin=req.origin,
+        origin_interface=req.origin_interface,
     )
     return StoreResponse(memory_id=memory_id)
 
@@ -86,6 +92,8 @@ def search(req: SearchRequest):
         limit=req.limit,
         category=req.category,
         subject=req.subject,
+        origin=req.origin,
+        origin_interface=req.origin_interface,
     )
     return {"results": results, "count": len(results)}
 

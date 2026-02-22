@@ -96,11 +96,19 @@ def create_llm(provider: str, api_key: str, model: str):
         raise ValueError(f"Unknown LLM provider: {provider}. Use 'anthropic' or 'openai'.")
 
 
-def create_embed(provider: str, api_key: str, model: str):
+def create_embed(provider: str, api_key: str = "", model: str = "", base_url: str = "", dims: int = 1024):
     """Factory for embedding providers."""
-    if provider == "voyage":
+    if provider == "ollama":
+        from maasv.providers.ollama import OllamaEmbed
+        kwargs = {"dims": dims}
+        if model:
+            kwargs["model"] = model
+        if base_url:
+            kwargs["base_url"] = base_url
+        return OllamaEmbed(**kwargs)
+    elif provider == "voyage":
         return VoyageEmbed(api_key=api_key, model=model)
     elif provider == "openai":
         return OpenAIEmbed(api_key=api_key, model=model)
     else:
-        raise ValueError(f"Unknown embed provider: {provider}. Use 'voyage' or 'openai'.")
+        raise ValueError(f"Unknown embed provider: {provider}. Use 'ollama', 'voyage', or 'openai'.")

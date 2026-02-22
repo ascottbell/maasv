@@ -17,8 +17,9 @@ class MaasvConfig:
     # Database
     db_path: Path
 
-    # Embedding dimensions (must match the EmbedProvider output)
+    # Embedding
     embed_dims: int = 1024
+    embed_model: str = "qwen3-embedding:8b"  # recorded in DB to prevent model mismatch
 
     # Models (passed to LLMProvider.call — provider decides how to route)
     extraction_model: str = "claude-haiku-4-5-20251001"

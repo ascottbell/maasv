@@ -28,7 +28,9 @@ def store_memory(
     source: str = "manual",
     confidence: float = 1.0,
     metadata: Optional[dict] = None,
-    dedup_threshold: float = 0.05
+    dedup_threshold: float = 0.05,
+    origin: Optional[str] = None,
+    origin_interface: Optional[str] = None,
 ) -> str:
     """
     Store a new memory with embedding, with dedup check.
@@ -41,6 +43,8 @@ def store_memory(
         confidence: How confident we are (0.0-1.0)
         metadata: Additional structured data
         dedup_threshold: Vector distance below which a memory is considered duplicate
+        origin: What system created this (e.g., "claude", "chatgpt", "salesforce")
+        origin_interface: Specific client/interface (e.g., "claude-code", "claude-desktop", "codex")
 
     Returns:
         Memory ID (existing ID if duplicate found)
@@ -93,8 +97,8 @@ def store_memory(
         memory_id = f"mem_{uuid.uuid4().hex[:12]}"
 
         db.execute("""
-            INSERT INTO memories (id, content, category, subject, source, confidence, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memories (id, content, category, subject, source, confidence, metadata, origin, origin_interface)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             memory_id,
             content,
@@ -102,7 +106,9 @@ def store_memory(
             subject,
             source,
             confidence,
-            json.dumps(metadata) if metadata else None
+            json.dumps(metadata) if metadata else None,
+            origin,
+            origin_interface,
         ))
 
         db.execute(
@@ -115,11 +121,19 @@ def store_memory(
     return memory_id
 
 
-def supersede_memory(old_id: str, new_content: str, source: str = "correction", force: bool = False) -> str:
+def supersede_memory(
+    old_id: str,
+    new_content: str,
+    source: str = "correction",
+    force: bool = False,
+    origin: Optional[str] = None,
+    origin_interface: Optional[str] = None,
+) -> str:
     """Mark an old memory as superseded and create a new one.
 
     Uses a single connection/transaction: read old -> insert new -> update old.
     Rejects superseding memories in protected categories unless force=True.
+    Origin fields default to the old memory's values if not provided.
     """
     from maasv.core.graph import _clamp_confidence
 
@@ -129,7 +143,7 @@ def supersede_memory(old_id: str, new_content: str, source: str = "correction", 
     with _db() as db:
         # 1. Read the old memory
         old = db.execute(
-            "SELECT category, subject, metadata, confidence FROM memories WHERE id = ?",
+            "SELECT category, subject, metadata, confidence, origin, origin_interface FROM memories WHERE id = ?",
             (old_id,)
         ).fetchone()
 
@@ -150,6 +164,11 @@ def supersede_memory(old_id: str, new_content: str, source: str = "correction", 
         subject = old['subject']
         confidence = _clamp_confidence(old.get('confidence', 1.0))
         metadata = json.loads(old['metadata']) if old['metadata'] else None
+        # Inherit origin from old memory if not explicitly provided
+        if origin is None:
+            origin = old.get('origin')
+        if origin_interface is None:
+            origin_interface = old.get('origin_interface')
 
         # 2. Dedup check against existing active memories
         new_id = None
@@ -178,11 +197,12 @@ def supersede_memory(old_id: str, new_content: str, source: str = "correction", 
         if new_id is None:
             new_id = f"mem_{uuid.uuid4().hex[:12]}"
             db.execute("""
-                INSERT INTO memories (id, content, category, subject, source, confidence, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO memories (id, content, category, subject, source, confidence, metadata, origin, origin_interface)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 new_id, new_content, category, subject, source, confidence,
-                json.dumps(metadata) if metadata else None
+                json.dumps(metadata) if metadata else None,
+                origin, origin_interface,
             ))
             db.execute(
                 "INSERT INTO memory_vectors (id, embedding) VALUES (?, ?)",

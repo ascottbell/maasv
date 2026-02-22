@@ -132,6 +132,62 @@ def run_migration(db: sqlite3.Connection, version: int, description: str, migrat
         raise
 
 
+def _verify_embed_model(db: sqlite3.Connection, model: str, dims: int):
+    """Record or verify the embedding model used for this database.
+
+    On first init, writes the model name and dims to db_meta. On subsequent
+    opens, verifies the configured model matches what the DB was built with.
+    Raises on mismatch to prevent silent vector space corruption.
+    """
+    # Check if db_meta table exists (won't exist on very first init before migration 7)
+    table_exists = db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='db_meta'"
+    ).fetchone()
+    if not table_exists:
+        return  # Migration hasn't run yet, skip
+
+    existing_model = db.execute(
+        "SELECT value FROM db_meta WHERE key = 'embed_model'"
+    ).fetchone()
+
+    existing_dims = db.execute(
+        "SELECT value FROM db_meta WHERE key = 'embed_dims'"
+    ).fetchone()
+
+    if existing_model is None:
+        # First time — record the model
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        db.execute(
+            "INSERT INTO db_meta (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("embed_model", model, now, now)
+        )
+        db.execute(
+            "INSERT INTO db_meta (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("embed_dims", str(dims), now, now)
+        )
+        db.commit()
+        logger.info("Recorded embedding model in db_meta: %s (%dd)", model, dims)
+    else:
+        # Verify match
+        db_model = existing_model["value"]
+        db_dims = int(existing_dims["value"]) if existing_dims else None
+
+        if db_model != model:
+            raise RuntimeError(
+                f"Embedding model mismatch! Database was built with '{db_model}' "
+                f"but current config uses '{model}'. Using different embedding models "
+                f"on the same database corrupts the vector space. Either change your "
+                f"config to match, or create a new database."
+            )
+
+        if db_dims is not None and db_dims != dims:
+            raise RuntimeError(
+                f"Embedding dimension mismatch! Database was built with {db_dims}d "
+                f"but current config uses {dims}d. Either change config.embed_dims "
+                f"to {db_dims} or create a new database."
+            )
+
+
 def init_db():
     """Initialize database schema."""
     db = get_db()
@@ -452,6 +508,41 @@ def init_db():
         """)
 
     run_migration(db, 5, "Learned ranker — retrieval_log and weights tables", _migrate_learned_ranker)
+
+    # --- Migration 6: Origin provenance columns ---
+    def _migrate_origin(db: sqlite3.Connection):
+        # Add origin (who/what created it: "claude", "chatgpt", "salesforce")
+        # and origin_interface (specific client: "claude-code", "claude-desktop", "codex")
+        # to both memories and relationships.
+        db.execute("ALTER TABLE memories ADD COLUMN origin TEXT DEFAULT NULL")
+        db.execute("ALTER TABLE memories ADD COLUMN origin_interface TEXT DEFAULT NULL")
+        db.execute("ALTER TABLE relationships ADD COLUMN origin TEXT DEFAULT NULL")
+        db.execute("ALTER TABLE relationships ADD COLUMN origin_interface TEXT DEFAULT NULL")
+
+        # Indexes for filtering by origin (common query pattern for multi-agent)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin ON memories(origin)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin_interface ON memories(origin_interface)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationships_origin ON relationships(origin)")
+
+    run_migration(db, 6, "Origin provenance columns (origin, origin_interface)", _migrate_origin)
+
+    # --- Migration 7: Database metadata table (embedding model tracking) ---
+    def _migrate_db_meta(db: sqlite3.Connection):
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS db_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    run_migration(db, 7, "Database metadata table (db_meta)", _migrate_db_meta)
+
+    # Record / verify embedding model — must happen AFTER migration 7 creates the table
+    import maasv
+    config = maasv.get_config()
+    _verify_embed_model(db, config.embed_model, config.embed_dims)
 
     db.close()
 

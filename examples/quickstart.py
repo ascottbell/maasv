@@ -2,8 +2,8 @@
 maasv quickstart: store memories, build a knowledge graph, retrieve with context.
 
 This example uses mock providers so you can run it without any API keys or
-embedding models. In production, you'd swap these for real providers
-(see the EmbedProvider and LLMProvider protocols in maasv/protocols.py).
+embedding models. In production, you'd use Ollama for embeddings (the default)
+and a real LLM provider for entity extraction.
 
     python examples/quickstart.py
 """
@@ -17,7 +17,8 @@ from maasv.config import MaasvConfig
 
 
 # -- Step 0: Implement the two provider protocols ---------------------------
-# maasv doesn't bundle an LLM or embedding model. You bring your own.
+# In production, maasv defaults to Ollama for embeddings (no code needed).
+# You only need to provide an LLM provider for entity extraction.
 # These mocks let you run the example without any external dependencies.
 
 class LocalEmbedProvider:
@@ -53,6 +54,7 @@ with tempfile.TemporaryDirectory() as tmp:
     config = MaasvConfig(
         db_path=db_path,
         embed_dims=64,
+        embed_model="mock-hash-embed",  # recorded in DB for safety
         cross_encoder_enabled=False,
     )
 
@@ -63,17 +65,30 @@ with tempfile.TemporaryDirectory() as tmp:
     )
 
     # -- Step 2: Store some memories ----------------------------------------
+    # In a multi-agent setup, each source identifies itself via origin fields.
 
     from maasv.core.store import store_memory
 
-    store_memory("Morgan is the tech lead on the Atlas project", category="project", subject="Morgan")
-    store_memory("The team prefers Rust for backend services", category="preference", subject="Tech stack")
-    store_memory("Atlas is a geospatial mapping tool for field researchers", category="project", subject="Atlas")
+    store_memory(
+        "Morgan is the tech lead on the Atlas project",
+        category="project", subject="Morgan",
+        origin="claude", origin_interface="claude-code",
+    )
+    store_memory(
+        "The team prefers Rust for backend services",
+        category="preference", subject="Tech stack",
+        origin="openai", origin_interface="chatgpt-web",
+    )
+    store_memory(
+        "Atlas is a geospatial mapping tool for field researchers",
+        category="project", subject="Atlas",
+        origin="claude", origin_interface="claude-desktop",
+    )
     store_memory("I prefer Python over JavaScript", category="preference")
     store_memory("Started building Atlas in March 2024", category="project", subject="Atlas")
     store_memory("Atlas uses a vector store for fast retrieval", category="project", subject="Atlas")
 
-    print("Stored 6 memories.\n")
+    print("Stored 6 memories (3 with origin tracking).\n")
 
     # -- Step 3: Build the knowledge graph ----------------------------------
 
@@ -86,7 +101,7 @@ with tempfile.TemporaryDirectory() as tmp:
     portland = find_or_create_entity("Portland", "place")
 
     add_relationship(morgan, "works_with", object_id=taylor)
-    add_relationship(morgan, "works_on", object_id=atlas)
+    add_relationship(morgan, "works_on", object_id=atlas, origin="claude", origin_interface="codex")
     add_relationship(morgan, "lives_in", object_id=portland)
     add_relationship(atlas, "uses_tech", object_id=rust)
 
@@ -99,7 +114,16 @@ with tempfile.TemporaryDirectory() as tmp:
     results = find_similar_memories("Tell me about Atlas", limit=3)
     print("Query: 'Tell me about Atlas'")
     for mem in results:
-        print(f"  [{mem['category']}] {mem['content']}")
+        origin_tag = f" [{mem['origin']}]" if mem.get("origin") else ""
+        print(f"  [{mem['category']}]{origin_tag} {mem['content']}")
+
+    print()
+
+    # Filter by origin — only show what Claude knows
+    claude_results = find_similar_memories("Atlas", limit=3, origin="claude")
+    print("Query: 'Atlas' (filtered to origin=claude)")
+    for mem in claude_results:
+        print(f"  [{mem.get('origin_interface', '?')}] {mem['content']}")
 
     print()
 
