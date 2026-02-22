@@ -65,7 +65,7 @@ pip install "maasv[reranking]"    # Cross-encoder reranking (~2GB torch)
 
 ### 1. Initialize
 
-maasv defaults to Ollama with qwen3-embedding:8b for embeddings. You only need to provide an LLM provider if you want entity extraction.
+maasv defaults to Ollama with qwen3-embedding:8b for embeddings. Memory storage, retrieval, manual graph operations, and the wisdom system all work without an LLM. An LLM provider is only needed if you want **automatic entity extraction** — the background pipeline that reads your memories and builds the knowledge graph for you.
 
 ```python
 from pathlib import Path
@@ -78,7 +78,7 @@ maasv.init(config=config, llm=MyLLM())
 
 That's it. One required config field: `db_path`. maasv creates the database, runs migrations, records the embedding model, and is ready to use.
 
-You still need an LLM provider for entity extraction. Any provider that implements `call(messages, model, max_tokens, source) -> str` works:
+To enable automatic entity extraction, provide an LLM. Any provider that implements `call(messages, model, max_tokens, source) -> str` works:
 
 ```python
 # With Anthropic
