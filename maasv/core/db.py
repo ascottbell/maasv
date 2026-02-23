@@ -539,6 +539,52 @@ def init_db():
 
     run_migration(db, 7, "Database metadata table (db_meta)", _migrate_db_meta)
 
+    # --- Migration 8: Trigram FTS5 table for entity substring search ---
+    def _migrate_entity_trigram(db: sqlite3.Connection):
+        # Second FTS5 table using trigram tokenizer — enables substring matching
+        # on entity names (e.g., "Robot" finds "MaasvTestRobot").
+        # Uses external content table to avoid data duplication.
+        db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS entities_trigram USING fts5(
+                name,
+                canonical_name,
+                content='entities',
+                content_rowid='rowid',
+                tokenize='trigram',
+                detail='none'
+            )
+        """)
+
+        # Sync triggers: insert, delete, update
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS entities_trigram_ai AFTER INSERT ON entities BEGIN
+                INSERT INTO entities_trigram(rowid, name, canonical_name)
+                VALUES (NEW.rowid, NEW.name, NEW.canonical_name);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS entities_trigram_ad AFTER DELETE ON entities BEGIN
+                INSERT INTO entities_trigram(entities_trigram, rowid, name, canonical_name)
+                VALUES ('delete', OLD.rowid, OLD.name, OLD.canonical_name);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS entities_trigram_au AFTER UPDATE ON entities BEGIN
+                INSERT INTO entities_trigram(entities_trigram, rowid, name, canonical_name)
+                VALUES ('delete', OLD.rowid, OLD.name, OLD.canonical_name);
+                INSERT INTO entities_trigram(rowid, name, canonical_name)
+                VALUES (NEW.rowid, NEW.name, NEW.canonical_name);
+            END
+        """)
+
+        # Backfill existing entities into trigram index
+        db.execute("""
+            INSERT INTO entities_trigram(rowid, name, canonical_name)
+            SELECT rowid, name, canonical_name FROM entities
+        """)
+
+    run_migration(db, 8, "Trigram FTS5 table for entity substring search", _migrate_entity_trigram)
+
     # Record / verify embedding model — must happen AFTER migration 7 creates the table
     import maasv
     config = maasv.get_config()

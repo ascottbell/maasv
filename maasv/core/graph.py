@@ -343,8 +343,31 @@ def search_entities(
     entity_type: Optional[str] = None,
     limit: int = 10
 ) -> list[dict]:
-    """Search entities using FTS."""
+    """Search entities using tiered FTS: word-match → trigram substring → LIKE fallback.
+
+    1. Word-match FTS5 (entities_fts): best for multi-word names ("Adam Epstein")
+    2. Trigram FTS5 (entities_trigram): substring matching ("Robot" in "MaasvTestRobot")
+       Requires query length >= 3 (trigram minimum)
+    3. LIKE fallback: catches everything else (short queries, FTS errors)
+    """
+    from maasv.core.db import _sanitize_fts_input
+
+    sanitized = _sanitize_fts_input(query)
+    if not sanitized.strip():
+        return []
+
+    def _parse_rows(rows):
+        results = []
+        for row in rows:
+            result = dict(row)
+            if result.get('metadata'):
+                result['metadata'] = json.loads(result['metadata'])
+            results.append(result)
+        return results
+
     with _db() as db:
+        # Tier 1: Word-match FTS5
+        rows = []
         try:
             if entity_type:
                 rows = db.execute("""
@@ -355,7 +378,7 @@ def search_entities(
                     AND e.entity_type = ?
                     ORDER BY rank
                     LIMIT ?
-                """, (query, entity_type, limit)).fetchall()
+                """, (sanitized, entity_type, limit)).fetchall()
             else:
                 rows = db.execute("""
                     SELECT e.*
@@ -364,28 +387,53 @@ def search_entities(
                     WHERE entities_fts MATCH ?
                     ORDER BY rank
                     LIMIT ?
-                """, (query, limit)).fetchall()
+                """, (sanitized, limit)).fetchall()
         except Exception:
-            escaped_query = _escape_like(query)
-            if entity_type:
-                rows = db.execute("""
-                    SELECT * FROM entities
-                    WHERE name LIKE ? ESCAPE '\\' AND entity_type = ?
-                    LIMIT ?
-                """, (f"%{escaped_query}%", entity_type, limit)).fetchall()
-            else:
-                rows = db.execute("""
-                    SELECT * FROM entities WHERE name LIKE ? ESCAPE '\\' LIMIT ?
-                """, (f"%{escaped_query}%", limit)).fetchall()
+            pass  # Fall through to trigram
 
-    results = []
-    for row in rows:
-        result = dict(row)
-        if result.get('metadata'):
-            result['metadata'] = json.loads(result['metadata'])
-        results.append(result)
+        if rows:
+            return _parse_rows(rows)
 
-    return results
+        # Tier 2: Trigram FTS5 (substring matching, requires >= 3 chars)
+        if len(sanitized) >= 3:
+            try:
+                if entity_type:
+                    rows = db.execute("""
+                        SELECT e.*
+                        FROM entities_trigram t
+                        JOIN entities e ON t.rowid = e.rowid
+                        WHERE entities_trigram MATCH ?
+                        AND e.entity_type = ?
+                        LIMIT ?
+                    """, (sanitized, entity_type, limit)).fetchall()
+                else:
+                    rows = db.execute("""
+                        SELECT e.*
+                        FROM entities_trigram t
+                        JOIN entities e ON t.rowid = e.rowid
+                        WHERE entities_trigram MATCH ?
+                        LIMIT ?
+                    """, (sanitized, limit)).fetchall()
+            except Exception:
+                pass  # Fall through to LIKE
+
+            if rows:
+                return _parse_rows(rows)
+
+        # Tier 3: LIKE fallback (short queries or FTS failures)
+        escaped_query = _escape_like(query)
+        if entity_type:
+            rows = db.execute("""
+                SELECT * FROM entities
+                WHERE name LIKE ? ESCAPE '\\' AND entity_type = ?
+                LIMIT ?
+            """, (f"%{escaped_query}%", entity_type, limit)).fetchall()
+        else:
+            rows = db.execute("""
+                SELECT * FROM entities WHERE name LIKE ? ESCAPE '\\' LIMIT ?
+            """, (f"%{escaped_query}%", limit)).fetchall()
+
+    return _parse_rows(rows)
 
 
 def get_entities_by_type(entity_type: str, limit: int = 50) -> list[dict]:
