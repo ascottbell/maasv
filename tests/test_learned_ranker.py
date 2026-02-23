@@ -874,6 +874,197 @@ class TestIPSWeightedTraining:
 
 
 # ============================================================================
+# GRADUATION TESTS
+# ============================================================================
+
+class TestGraduation:
+    def _seed_shadow_metrics(self, db, n=60, tau=0.6, overlap=4):
+        """Insert shadow metrics for graduation testing."""
+        now = datetime.now(timezone.utc)
+        for i in range(n):
+            # Add a little noise to tau
+            noisy_tau = tau + (0.05 if i % 3 == 0 else -0.03)
+            db.execute(
+                """INSERT INTO shadow_metrics
+                   (timestamp, top5_overlap, kendall_tau, avg_surfacing, candidate_count)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    (now - timedelta(hours=n - i)).isoformat(),
+                    overlap,
+                    noisy_tau,
+                    15.0,
+                    20,
+                ),
+            )
+        db.commit()
+
+    def test_shadow_metrics_table_exists(self, maasv_db):
+        """Migration 10 should create shadow_metrics table."""
+        from maasv.core.db import _db
+        with _db() as db:
+            row = db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='shadow_metrics'"
+            ).fetchone()
+        assert row is not None
+
+    def test_shadow_compare_persists_metrics(self, maasv_db, sample_candidates):
+        """shadow_compare() should write to shadow_metrics table."""
+        from maasv.core.learned_ranker import shadow_compare, RankingModel, reload_model
+        from maasv.core.db import _db
+
+        reload_model()
+        model = RankingModel()
+        now = datetime.now(timezone.utc)
+
+        # Clear existing shadow metrics
+        with _db() as db:
+            db.execute("DELETE FROM shadow_metrics")
+            db.commit()
+
+        shadow_compare(
+            model, sample_candidates, {"identity", "family"}, now,
+            {"mem_001": 0.2, "mem_002": 0.4}, {"mem_001"}, set(),
+        )
+
+        with _db() as db:
+            count = db.execute("SELECT COUNT(*) as n FROM shadow_metrics").fetchone()["n"]
+        assert count >= 1
+
+    def test_graduation_insufficient_comparisons(self, maasv_db):
+        """Should report not ready when too few shadow comparisons."""
+        from maasv.core.learned_ranker import check_graduation_readiness
+        from maasv.core.db import _db
+        import maasv
+
+        config = maasv.get_config()
+        original_shadow = config.learned_ranker_shadow_mode
+        config.learned_ranker_shadow_mode = True
+
+        try:
+            # Clear shadow metrics
+            with _db() as db:
+                db.execute("DELETE FROM shadow_metrics")
+                db.commit()
+
+            result = check_graduation_readiness()
+            assert result is not None
+            assert result["ready"] is False
+            assert result["reason"] == "insufficient_comparisons"
+        finally:
+            config.learned_ranker_shadow_mode = original_shadow
+
+    def test_graduation_ready(self, maasv_db):
+        """Should report ready when all criteria met."""
+        from maasv.core.learned_ranker import check_graduation_readiness
+        from maasv.core.db import _db
+        import maasv
+
+        config = maasv.get_config()
+        original_shadow = config.learned_ranker_shadow_mode
+        original_min = config.learned_ranker_graduation_min_comparisons
+        original_ndcg = config.learned_ranker_graduation_min_ndcg
+        config.learned_ranker_shadow_mode = True
+        config.learned_ranker_graduation_min_comparisons = 10  # Lower for test
+        config.learned_ranker_graduation_min_ndcg = 0.0  # Accept any NDCG
+
+        try:
+            with _db() as db:
+                db.execute("DELETE FROM shadow_metrics")
+                db.commit()
+                self._seed_shadow_metrics(db, n=20, tau=0.7, overlap=4)
+
+            result = check_graduation_readiness()
+            assert result is not None
+            assert result["ready"] is True
+            assert "ndcg" in result
+            assert "avg_tau" in result
+            assert "tau_std" in result
+        finally:
+            config.learned_ranker_shadow_mode = original_shadow
+            config.learned_ranker_graduation_min_comparisons = original_min
+            config.learned_ranker_graduation_min_ndcg = original_ndcg
+
+    def test_graduation_low_tau_rejected(self, maasv_db):
+        """Should reject when tau is too low (anti-correlated)."""
+        from maasv.core.learned_ranker import check_graduation_readiness
+        from maasv.core.db import _db
+        import maasv
+
+        config = maasv.get_config()
+        original_shadow = config.learned_ranker_shadow_mode
+        original_min = config.learned_ranker_graduation_min_comparisons
+        original_ndcg = config.learned_ranker_graduation_min_ndcg
+        config.learned_ranker_shadow_mode = True
+        config.learned_ranker_graduation_min_comparisons = 10
+        config.learned_ranker_graduation_min_ndcg = 0.0
+
+        try:
+            with _db() as db:
+                db.execute("DELETE FROM shadow_metrics")
+                db.commit()
+                self._seed_shadow_metrics(db, n=20, tau=-0.8, overlap=1)
+
+            result = check_graduation_readiness()
+            assert result is not None
+            assert result["ready"] is False
+            assert result["reason"] == "low_tau"
+        finally:
+            config.learned_ranker_shadow_mode = original_shadow
+            config.learned_ranker_graduation_min_comparisons = original_min
+            config.learned_ranker_graduation_min_ndcg = original_ndcg
+
+    def test_graduate_from_shadow_mode(self, maasv_db):
+        """graduate_from_shadow_mode() should flip the config flag."""
+        from maasv.core.learned_ranker import graduate_from_shadow_mode
+        import maasv
+
+        config = maasv.get_config()
+        original = config.learned_ranker_shadow_mode
+        config.learned_ranker_shadow_mode = True
+
+        try:
+            result = graduate_from_shadow_mode()
+            assert result is True
+            assert config.learned_ranker_shadow_mode is False
+
+            # Second call should return False (already graduated)
+            result2 = graduate_from_shadow_mode()
+            assert result2 is False
+        finally:
+            config.learned_ranker_shadow_mode = original
+
+    def test_graduation_skipped_when_not_shadow(self, maasv_db):
+        """check_graduation_readiness returns None when not in shadow mode."""
+        from maasv.core.learned_ranker import check_graduation_readiness
+        import maasv
+
+        config = maasv.get_config()
+        original = config.learned_ranker_shadow_mode
+        config.learned_ranker_shadow_mode = False
+
+        try:
+            result = check_graduation_readiness()
+            assert result is None
+        finally:
+            config.learned_ranker_shadow_mode = original
+
+    def test_learn_job_with_graduation_check(self, maasv_db):
+        """Learn job should complete with graduation phase."""
+        from maasv.lifecycle.learn import run_learn_job
+        import maasv
+
+        config = maasv.get_config()
+        original = config.learned_ranker_shadow_mode
+        config.learned_ranker_shadow_mode = True
+
+        try:
+            # Should not raise
+            run_learn_job(data={}, cancel_check=lambda: False)
+        finally:
+            config.learned_ranker_shadow_mode = original
+
+
+# ============================================================================
 # INTEGRATION TESTS
 # ============================================================================
 

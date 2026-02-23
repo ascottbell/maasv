@@ -610,6 +610,25 @@ def init_db():
 
     run_migration(db, 9, "Surfacing count for IPS", _migrate_surfacing_count)
 
+    # --- Migration 10: Shadow metrics table for graduation readiness ---
+    def _migrate_shadow_metrics(db: sqlite3.Connection):
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS shadow_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                top5_overlap INTEGER NOT NULL,
+                kendall_tau REAL NOT NULL,
+                avg_surfacing REAL NOT NULL,
+                candidate_count INTEGER NOT NULL
+            )
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_shadow_metrics_timestamp
+            ON shadow_metrics(timestamp)
+        """)
+
+    run_migration(db, 10, "Shadow metrics table for graduation readiness", _migrate_shadow_metrics)
+
     # Record / verify embedding model — must happen AFTER migration 7 creates the table
     import maasv
     config = maasv.get_config()

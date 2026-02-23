@@ -53,6 +53,11 @@ class MaasvConfig:
     learned_ranker_lr: float = 0.01
     learned_ranker_max_steps: int = 50
     learned_ranker_ips_clamp: float = 50.0
+    learned_ranker_auto_graduate: bool = False
+    learned_ranker_graduation_min_comparisons: int = 50
+    learned_ranker_graduation_min_ndcg: float = 0.5
+    learned_ranker_graduation_min_tau: float = -0.3
+    learned_ranker_graduation_max_tau_std: float = 0.3
 
     # Known entities for extraction prompts (name -> type)
     known_entities: dict[str, str] = field(default_factory=dict)

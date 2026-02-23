@@ -396,6 +396,21 @@ def shadow_compare(
             f"kendall_tau={tau:.2f}, avg_surfacing={avg_surfacing:.1f}"
         )
 
+        # Persist metrics for graduation readiness analysis
+        try:
+            from maasv.core.db import _db
+            with _db() as db:
+                db.execute(
+                    """INSERT INTO shadow_metrics
+                       (timestamp, top5_overlap, kendall_tau, avg_surfacing, candidate_count)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (now.isoformat(), overlap, tau, avg_surfacing, len(candidates)),
+                )
+                db.commit()
+        except Exception:
+            # Best-effort — don't let persistence failure break shadow comparison
+            logger.debug("[LearnedRanker] Failed to persist shadow metrics", exc_info=True)
+
     except Exception:
         logger.debug("[LearnedRanker] Shadow comparison failed", exc_info=True)
 
@@ -756,3 +771,140 @@ def _compute_ndcg(model: RankingModel, samples: list, k: int = 5) -> float:
         idcg += (2 ** rel - 1) / math.log2(i + 2)
 
     return dcg / idcg if idcg > 0 else 0.0
+
+
+# ============================================================================
+# GRADUATION FROM SHADOW MODE
+# ============================================================================
+
+def check_graduation_readiness() -> Optional[dict]:
+    """
+    Check if the learned ranker is ready to graduate from shadow mode.
+
+    Criteria:
+    1. Enough shadow comparisons accumulated (configurable, default 50)
+    2. Training NDCG@5 above threshold (model has learned something useful)
+    3. Average Kendall tau above threshold (not anti-correlated with heuristic)
+    4. Tau is stable (std dev below threshold over recent window)
+
+    Returns a dict with readiness status and metrics, or None if shadow mode
+    is not enabled or data is insufficient to evaluate.
+    """
+    import maasv
+    config = maasv.get_config()
+
+    if not config.learned_ranker_enabled:
+        return None
+    if not config.learned_ranker_shadow_mode:
+        return None  # Already graduated
+
+    from maasv.core.db import _db
+
+    with _db() as db:
+        # Count shadow comparisons
+        count_row = db.execute(
+            "SELECT COUNT(*) as n FROM shadow_metrics"
+        ).fetchone()
+        comparison_count = count_row["n"] if count_row else 0
+
+        if comparison_count < config.learned_ranker_graduation_min_comparisons:
+            return {
+                "ready": False,
+                "reason": f"insufficient_comparisons",
+                "comparisons": comparison_count,
+                "needed": config.learned_ranker_graduation_min_comparisons,
+            }
+
+        # Get training NDCG from most recent weights
+        weights_row = db.execute(
+            "SELECT ndcg_score, training_samples FROM learned_ranker_weights WHERE id = 1"
+        ).fetchone()
+
+        if weights_row is None or weights_row["ndcg_score"] is None:
+            return {
+                "ready": False,
+                "reason": "no_trained_model",
+                "comparisons": comparison_count,
+            }
+
+        ndcg = weights_row["ndcg_score"]
+        if ndcg < config.learned_ranker_graduation_min_ndcg:
+            return {
+                "ready": False,
+                "reason": "low_ndcg",
+                "ndcg": ndcg,
+                "needed": config.learned_ranker_graduation_min_ndcg,
+                "comparisons": comparison_count,
+            }
+
+        # Analyze recent shadow metrics (last N comparisons where N = graduation minimum)
+        window = config.learned_ranker_graduation_min_comparisons
+        recent = db.execute(
+            """SELECT kendall_tau FROM shadow_metrics
+               ORDER BY timestamp DESC LIMIT ?""",
+            (window,),
+        ).fetchall()
+
+        taus = [r["kendall_tau"] for r in recent]
+
+    avg_tau = sum(taus) / len(taus)
+    if avg_tau < config.learned_ranker_graduation_min_tau:
+        return {
+            "ready": False,
+            "reason": "low_tau",
+            "avg_tau": avg_tau,
+            "needed": config.learned_ranker_graduation_min_tau,
+            "comparisons": comparison_count,
+            "ndcg": ndcg,
+        }
+
+    # Tau stability: std dev
+    mean = avg_tau
+    variance = sum((t - mean) ** 2 for t in taus) / len(taus)
+    tau_std = variance ** 0.5
+
+    if tau_std > config.learned_ranker_graduation_max_tau_std:
+        return {
+            "ready": False,
+            "reason": "unstable_tau",
+            "tau_std": tau_std,
+            "needed_max": config.learned_ranker_graduation_max_tau_std,
+            "avg_tau": avg_tau,
+            "comparisons": comparison_count,
+            "ndcg": ndcg,
+        }
+
+    # All criteria met
+    return {
+        "ready": True,
+        "comparisons": comparison_count,
+        "ndcg": ndcg,
+        "avg_tau": avg_tau,
+        "tau_std": tau_std,
+        "training_samples": weights_row["training_samples"],
+    }
+
+
+def graduate_from_shadow_mode() -> bool:
+    """
+    Graduate the learned ranker from shadow mode.
+
+    Sets learned_ranker_shadow_mode=False on the live config so the learned
+    ranker starts affecting retrieval results immediately. The config change
+    is in-memory only — the host app should persist it if desired.
+
+    Returns True if graduated, False if already graduated or not enabled.
+    """
+    import maasv
+    config = maasv.get_config()
+
+    if not config.learned_ranker_enabled:
+        return False
+    if not config.learned_ranker_shadow_mode:
+        return False  # Already graduated
+
+    config.learned_ranker_shadow_mode = False
+    reload_model()  # Force model reload so it takes effect
+
+    logger.info("[LearnedRanker] Graduated from shadow mode — learned ranker now affects rankings")
+    return True
