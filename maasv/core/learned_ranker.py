@@ -29,7 +29,7 @@ FEATURE_NAMES = [
     "graph_hit",
     "importance",
     "age_decay",
-    "access_count_norm",
+    "ips_utility",
     "category_code",
     "rrf_rank_norm",
 ]
@@ -135,10 +135,24 @@ def _get_model() -> Optional[RankingModel]:
             from maasv.core.db import _db
             with _db() as db:
                 row = db.execute(
-                    "SELECT weights_json, training_samples FROM learned_ranker_weights WHERE id = 1"
+                    "SELECT weights_json, feature_names, training_samples FROM learned_ranker_weights WHERE id = 1"
                 ).fetchone()
 
             if row is None:
+                _model_loaded = True
+                return None
+
+            # Feature version guard: discard weights if feature schema changed.
+            # Model retrains from scratch on next learn cycle.
+            try:
+                stored_features = json.loads(row["feature_names"])
+            except (json.JSONDecodeError, TypeError):
+                stored_features = None
+            if stored_features != FEATURE_NAMES:
+                logger.info(
+                    "[LearnedRanker] Feature schema changed (%s -> %s), discarding stored weights",
+                    stored_features, FEATURE_NAMES,
+                )
                 _model_loaded = True
                 return None
 
@@ -225,9 +239,15 @@ def extract_features(
             days_old = 0
         age_decay = math.exp(-days_old / 180)
 
-    # 6. Access count (normalized, capped at 5)
-    access_count = min(mem.get("access_count") or 0, 5)
-    access_count_norm = math.log(2 + access_count) / math.log(7)
+    # 6. IPS utility (access_count / surfacing_count, normalized to [0, 1])
+    access_count = mem.get("access_count") or 0
+    surfacing_count = mem.get("surfacing_count") or 0
+    if surfacing_count > 0:
+        raw_utility = access_count / surfacing_count
+        ips_utility = min(raw_utility, 2.0) / 2.0  # normalize to [0, 1]
+    else:
+        # Cold-start fallback: old formula for memories without surfacing data
+        ips_utility = math.log(2 + min(access_count, 5)) / math.log(7)
 
     # 7. Category code (priority int / max)
     cat_priority = _get_category_priority()
@@ -244,7 +264,7 @@ def extract_features(
         graph_hit,
         importance,
         age_decay,
-        access_count_norm,
+        ips_utility,
         category_code,
         rrf_rank_norm,
     ]
@@ -361,8 +381,19 @@ def shadow_compare(
         total = concordant + discordant
         tau = (concordant - discordant) / total if total > 0 else 1.0
 
+        # Compute average surfacing count for propensity distribution monitoring
+        surfacing_values = [
+            m.get("surfacing_count") or 0 for m in candidates
+            if m.get("surfacing_count") is not None
+        ]
+        avg_surfacing = (
+            sum(surfacing_values) / len(surfacing_values)
+            if surfacing_values else 0.0
+        )
+
         logger.info(
-            f"[LearnedRanker] Shadow: top5_overlap={overlap}/5, kendall_tau={tau:.2f}"
+            f"[LearnedRanker] Shadow: top5_overlap={overlap}/5, "
+            f"kendall_tau={tau:.2f}, avg_surfacing={avg_surfacing:.1f}"
         )
 
     except Exception:
@@ -385,7 +416,7 @@ def log_retrieval(
 ):
     """Log a retrieval event for training data collection. Best-effort."""
     try:
-        from maasv.core.db import _db
+        from maasv.core.db import _db, _record_surfacing
 
         # Compute features for all candidates
         features = {}
@@ -417,6 +448,8 @@ def log_retrieval(
                     json.dumps(features),
                 ),
             )
+            # Track surfacing for IPS — all candidates were surfaced
+            _record_surfacing(db, [mem["id"] for mem in candidates])
             db.commit()
 
     except Exception:
@@ -537,7 +570,29 @@ def train(
         )
         return None
 
-    # Parse training data
+    # Collect all memory IDs from training data for surfacing count lookup
+    all_mem_ids = set()
+    for row in rows:
+        try:
+            features_dict = json.loads(row["features"])
+            all_mem_ids.update(features_dict.keys())
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # Batch-load surfacing counts and compute total retrievals
+    surfacing_counts: dict[str, int] = {}
+    total_retrievals = len(rows)
+    if all_mem_ids:
+        with _db() as db:
+            placeholders = ",".join("?" * len(all_mem_ids))
+            sc_rows = db.execute(
+                f"SELECT id, surfacing_count FROM memories WHERE id IN ({placeholders})",
+                list(all_mem_ids),
+            ).fetchall()
+            for sc_row in sc_rows:
+                surfacing_counts[sc_row["id"]] = sc_row["surfacing_count"] or 0
+
+    # Parse training data with IPS weights
     samples = []  # (features, outcome, weight)
     for row in rows:
         try:
@@ -547,8 +602,19 @@ def train(
             for mem_id, feat_list in features_dict.items():
                 if mem_id in outcomes_dict:
                     outcome = outcomes_dict[mem_id]
-                    weight = 0.5 if outcome == 0.0 else 1.0  # Weak negative downweight
-                    samples.append((feat_list, outcome, weight))
+                    surfacing = surfacing_counts.get(mem_id, 0)
+
+                    # IPS weight: memories surfaced rarely contribute stronger signal.
+                    # Memories with < 10 surfacings get default weight (noisy estimates).
+                    if surfacing >= 10:
+                        raw_ips_weight = min(
+                            total_retrievals / max(surfacing, 1),
+                            config.learned_ranker_ips_clamp,
+                        )
+                    else:
+                        raw_ips_weight = 1.0
+
+                    samples.append((feat_list, outcome, raw_ips_weight))
         except (json.JSONDecodeError, TypeError):
             continue
 
@@ -578,26 +644,34 @@ def train(
         # Sample a mini-batch
         batch = random.sample(samples, min(32, len(samples)))
 
+        # SNIPS normalization: normalize IPS weights within the batch
+        # so that sum(w_i) = batch_size. Prevents weight explosion.
+        raw_weights = [w for _, _, w in batch]
+        weight_sum = sum(raw_weights)
+        batch_size = len(batch)
+        if weight_sum > 0:
+            snips_weights = [(w / weight_sum) * batch_size for w in raw_weights]
+        else:
+            snips_weights = [1.0] * batch_size
+
         # Forward + loss
         total_loss = Value(0.0)
-        for feat_list, outcome, weight in batch:
+        for (feat_list, outcome, _), snips_w in zip(batch, snips_weights):
             x = [Value(f) for f in feat_list]
             pred = model.forward(x)
 
             # Binary cross-entropy: -[y*log(p) + (1-y)*log(1-p)]
-            # Clamp pred to avoid log(0)
-            p = Value(max(min(pred.data, 0.999), 0.001))
-            # Reconstruct p with gradient path
-            p = pred * 0.998 + 0.001  # Smooth: maps [0,1] -> [0.001, 0.999]
+            # Smooth: maps [0,1] -> [0.001, 0.999] to avoid log(0)
+            p = pred * 0.998 + 0.001
 
             if outcome > 0.5:
-                loss = -(p.log()) * weight
+                loss = -(p.log()) * snips_w
             else:
-                loss = -((1 - p).log()) * weight
+                loss = -((1 - p).log()) * snips_w
 
             total_loss = total_loss + loss
 
-        avg_loss = total_loss * (1.0 / len(batch))
+        avg_loss = total_loss * (1.0 / batch_size)
         losses.append(avg_loss.data)
 
         # Backward

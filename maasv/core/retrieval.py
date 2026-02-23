@@ -49,6 +49,7 @@ def _importance_score(
     for mem in candidates:
         importance = mem.get('importance') or 0.5
         access_count = mem.get('access_count') or 0
+        surfacing_count = mem.get('surfacing_count') or 0
 
         if mem.get('category') in protected:
             decay_factor = 1.0
@@ -62,11 +63,18 @@ def _importance_score(
                 days_old = 0
             decay_factor = math.exp(-days_old / 180)
 
-        dampened_access = min(access_count, 5)
+        # IPS utility: access_count/surfacing_count measures conversion rate.
+        # High ratio = surfaced rarely but used often = genuinely useful.
+        # Cold-start fallback uses the old capped formula.
+        if surfacing_count > 0:
+            ips_utility = math.log(2 + access_count / surfacing_count)
+        else:
+            ips_utility = math.log(2 + min(access_count, 5))
+
         distance = vector_distances.get(mem['id'])
 
         if distance is not None:
-            base_score = (1.0 - distance) * importance * decay_factor * math.log(2 + dampened_access)
+            base_score = (1.0 - distance) * importance * decay_factor * ips_utility
             signal_count = 1
             if mem['id'] in bm25_ids:
                 signal_count += 1
@@ -75,7 +83,7 @@ def _importance_score(
             mem['_imp_score'] = base_score + (signal_count - 1) * 0.01
             primary.append(mem)
         else:
-            mem['_imp_score'] = importance * decay_factor * math.log(2 + dampened_access) * 0.0001
+            mem['_imp_score'] = importance * decay_factor * ips_utility * 0.0001
             supplementary.append(mem)
 
     primary.sort(key=lambda m: m['_imp_score'], reverse=True)
@@ -187,7 +195,7 @@ def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
         rows = db.execute("""
             SELECT m.id, m.content, m.category, m.subject, m.confidence,
                    m.created_at, m.metadata, m.importance, m.access_count,
-                   m.origin, m.origin_interface,
+                   m.surfacing_count, m.origin, m.origin_interface,
                    bm25(memories_fts, 10.0, 1.0, 5.0) as bm25_score
             FROM memories_fts f
             JOIN memories m ON f.rowid = m.rowid
@@ -205,6 +213,7 @@ def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
                 rows = db.execute("""
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
+                           m.surfacing_count,
                            bm25(memories_fts, 10.0, 1.0, 5.0) as bm25_score
                     FROM memories_fts f
                     JOIN memories m ON f.rowid = m.rowid
@@ -382,7 +391,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 rows = db.execute("""
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
-                           m.origin, m.origin_interface,
+                           m.surfacing_count, m.origin, m.origin_interface,
                            1.0 as graph_score
                     FROM memories_fts f
                     JOIN memories m ON f.rowid = m.rowid
@@ -396,7 +405,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     rows = db.execute("""
                         SELECT m.id, m.content, m.category, m.subject, m.confidence,
                                m.created_at, m.metadata, m.importance, m.access_count,
-                               m.origin, m.origin_interface,
+                               m.surfacing_count, m.origin, m.origin_interface,
                                0.8 as graph_score
                         FROM memories_fts f
                         JOIN memories m ON f.rowid = m.rowid
@@ -416,7 +425,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     rows = db.execute("""
                         SELECT m.id, m.content, m.category, m.subject, m.confidence,
                                m.created_at, m.metadata, m.importance, m.access_count,
-                               m.origin, m.origin_interface,
+                               m.surfacing_count, m.origin, m.origin_interface,
                                0.8 as graph_score
                         FROM memories_fts f
                         JOIN memories m ON f.rowid = m.rowid
@@ -445,7 +454,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 rows = db.execute("""
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
-                           m.origin, m.origin_interface,
+                           m.surfacing_count, m.origin, m.origin_interface,
                            1.0 as graph_score
                     FROM memories_fts f
                     JOIN memories m ON f.rowid = m.rowid
@@ -485,7 +494,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 subject_rows = db.execute(f"""
                     SELECT DISTINCT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
-                           m.origin, m.origin_interface,
+                           m.surfacing_count, m.origin, m.origin_interface,
                            0.8 as graph_score
                     FROM memories m
                     WHERE m.superseded_by IS NULL
@@ -585,7 +594,7 @@ def find_similar_memories(
             SELECT
                 v.id, m.content, m.category, m.subject, m.confidence,
                 m.created_at, m.metadata, m.importance, m.access_count,
-                m.origin, m.origin_interface,
+                m.surfacing_count, m.origin, m.origin_interface,
                 distance
             FROM memory_vectors v
             JOIN memories m ON v.id = m.id

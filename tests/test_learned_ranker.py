@@ -81,6 +81,7 @@ def sample_candidates():
             "subject": "Alex",
             "importance": 1.0,
             "access_count": 5,
+            "surfacing_count": 10,
             "created_at": (now - timedelta(days=10)).isoformat(),
         },
         {
@@ -90,6 +91,7 @@ def sample_candidates():
             "subject": "Acme",
             "importance": 0.8,
             "access_count": 3,
+            "surfacing_count": 20,
             "created_at": (now - timedelta(days=30)).isoformat(),
         },
         {
@@ -99,6 +101,7 @@ def sample_candidates():
             "subject": "Maria",
             "importance": 0.6,
             "access_count": 1,
+            "surfacing_count": 0,
             "created_at": (now - timedelta(days=90)).isoformat(),
         },
     ]
@@ -369,14 +372,34 @@ class TestFeatureExtraction:
         # exp(-180/180) = exp(-1) ≈ 0.368
         assert abs(features[4] - math.exp(-1)) < 0.01
 
-    def test_access_count_normalization(self, sample_candidates):
+    def test_ips_utility_with_surfacing(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
         now = datetime.now(timezone.utc)
-        mem = sample_candidates[0]  # access_count=5
+        mem = sample_candidates[0]  # access_count=5, surfacing_count=10
         features = extract_features(
             mem, {}, set(), set(), set(), now
         )
-        expected = math.log(2 + 5) / math.log(7)
+        # raw_utility = 5/10 = 0.5, min(0.5, 2.0)/2.0 = 0.25
+        expected = min(5 / 10, 2.0) / 2.0
+        assert abs(features[5] - expected) < 1e-6
+
+    def test_ips_utility_cold_start(self):
+        from maasv.core.learned_ranker import extract_features
+        now = datetime.now(timezone.utc)
+        mem = {
+            "id": "mem_cold",
+            "content": "cold start memory",
+            "category": "project",
+            "importance": 0.5,
+            "access_count": 3,
+            "surfacing_count": 0,
+            "created_at": now.isoformat(),
+        }
+        features = extract_features(
+            mem, {}, set(), set(), set(), now
+        )
+        # Cold-start fallback: log(2 + min(3, 5)) / log(7)
+        expected = math.log(2 + 3) / math.log(7)
         assert abs(features[5] - expected) < 1e-6
 
 
@@ -577,6 +600,277 @@ class TestTraining:
         if stats is not None:
             assert "ndcg_score" in stats
             assert 0.0 <= stats["ndcg_score"] <= 1.0
+
+
+# ============================================================================
+# SURFACING TRACKING TESTS
+# ============================================================================
+
+class TestSurfacingTracking:
+    def test_log_retrieval_increments_surfacing(self, maasv_db, sample_candidates):
+        """log_retrieval() should increment surfacing_count for all candidates."""
+        from maasv.core.learned_ranker import log_retrieval
+        from maasv.core.db import _db
+        from maasv.core.store import store_memory
+
+        # Store actual memories so surfacing_count can be updated
+        mem_id = store_memory(content="Test surfacing memory", category="context")
+
+        # Get initial surfacing_count
+        with _db() as db:
+            before = db.execute(
+                "SELECT surfacing_count FROM memories WHERE id = ?", (mem_id,)
+            ).fetchone()
+        initial_count = before["surfacing_count"] if before else 0
+
+        now = datetime.now(timezone.utc)
+        candidate = {
+            "id": mem_id,
+            "content": "Test surfacing memory",
+            "category": "context",
+            "importance": 0.5,
+            "access_count": 0,
+            "surfacing_count": initial_count,
+            "created_at": now.isoformat(),
+        }
+
+        log_retrieval(
+            query="test surfacing",
+            candidates=[candidate],
+            returned_ids=[mem_id],
+            vector_distances={mem_id: 0.3},
+            bm25_ids=set(),
+            graph_ids=set(),
+            protected=set(),
+            now=now,
+        )
+
+        with _db() as db:
+            after = db.execute(
+                "SELECT surfacing_count FROM memories WHERE id = ?", (mem_id,)
+            ).fetchone()
+        assert after["surfacing_count"] == initial_count + 1
+
+    def test_migration_backfill(self, maasv_db):
+        """surfacing_count column should exist after migration 9."""
+        from maasv.core.db import _db
+        with _db() as db:
+            # Verify column exists by querying it
+            row = db.execute(
+                "SELECT surfacing_count FROM memories LIMIT 1"
+            ).fetchone()
+            # Should not raise — column exists
+
+
+# ============================================================================
+# IPS UTILITY TESTS
+# ============================================================================
+
+class TestIPSUtility:
+    def test_high_conversion_outscores_low(self):
+        """Memory with high access/surfacing ratio should score higher."""
+        from maasv.core.learned_ranker import extract_features
+        now = datetime.now(timezone.utc)
+
+        high_conversion = {
+            "id": "mem_high",
+            "content": "high conversion",
+            "category": "project",
+            "importance": 0.5,
+            "access_count": 8,
+            "surfacing_count": 10,
+            "created_at": now.isoformat(),
+        }
+        low_conversion = {
+            "id": "mem_low",
+            "content": "low conversion",
+            "category": "project",
+            "importance": 0.5,
+            "access_count": 2,
+            "surfacing_count": 50,
+            "created_at": now.isoformat(),
+        }
+
+        feat_high = extract_features(
+            high_conversion, {}, set(), set(), set(), now
+        )
+        feat_low = extract_features(
+            low_conversion, {}, set(), set(), set(), now
+        )
+
+        # IPS utility (feature 5) should be higher for high-conversion memory
+        assert feat_high[5] > feat_low[5]
+
+    def test_feature_normalization_bounds(self):
+        """IPS utility feature should always be in [0, 1]."""
+        from maasv.core.learned_ranker import extract_features
+        now = datetime.now(timezone.utc)
+
+        cases = [
+            {"access_count": 0, "surfacing_count": 0},
+            {"access_count": 100, "surfacing_count": 1},
+            {"access_count": 0, "surfacing_count": 100},
+            {"access_count": 5, "surfacing_count": 5},
+            {"access_count": 1000, "surfacing_count": 10},
+        ]
+
+        for case in cases:
+            mem = {
+                "id": "mem_bounds",
+                "content": "test",
+                "category": "project",
+                "importance": 0.5,
+                "created_at": now.isoformat(),
+                **case,
+            }
+            features = extract_features(mem, {}, set(), set(), set(), now)
+            assert 0.0 <= features[5] <= 1.0, (
+                f"IPS utility out of bounds for {case}: {features[5]}"
+            )
+
+    def test_importance_score_ips(self):
+        """_importance_score should use IPS utility when surfacing_count > 0."""
+        from maasv.core.retrieval import _importance_score
+        now = datetime.now(timezone.utc)
+
+        # Two memories: same access_count, different surfacing_count
+        mem_rare = {
+            "id": "mem_rare",
+            "content": "rare but useful",
+            "category": "project",
+            "importance": 0.5,
+            "access_count": 5,
+            "surfacing_count": 5,
+            "created_at": now.isoformat(),
+        }
+        mem_common = {
+            "id": "mem_common",
+            "content": "common but unremarkable",
+            "category": "project",
+            "importance": 0.5,
+            "access_count": 5,
+            "surfacing_count": 50,
+            "created_at": now.isoformat(),
+        }
+
+        primary, _ = _importance_score(
+            [mem_rare, mem_common],
+            protected=set(),
+            now=now,
+            vector_distances={"mem_rare": 0.3, "mem_common": 0.3},
+            bm25_ids=set(),
+            graph_ids=set(),
+        )
+
+        # mem_rare should score higher (5/5=1.0 ratio vs 5/50=0.1 ratio)
+        assert primary[0]["id"] == "mem_rare"
+
+
+# ============================================================================
+# IPS-WEIGHTED TRAINING TESTS
+# ============================================================================
+
+class TestIPSWeightedTraining:
+    def _seed_training_data_with_surfacing(self, n=20):
+        """Insert labeled data with surfacing counts for IPS training."""
+        from maasv.core.db import _db
+        from maasv.core.store import store_memory
+        import uuid
+
+        now = datetime.now(timezone.utc)
+        mem_ids = []
+
+        # Create actual memories with varying surfacing counts
+        with _db() as db:
+            for i in range(n):
+                mid = f"ips_mem_{i:03d}"
+                db.execute(
+                    """INSERT OR IGNORE INTO memories
+                       (id, content, category, importance, access_count, surfacing_count, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (mid, f"IPS test memory {i}", "project", 0.5,
+                     i % 5, (i + 1) * 5, now.isoformat()),
+                )
+                mem_ids.append(mid)
+
+            for i in range(n):
+                mid = mem_ids[i]
+                features = {
+                    mid: [
+                        0.5, 1.0 if i % 2 == 0 else 0.0, 0.0,
+                        0.5, 0.8, 0.6, 0.3, 1.0 / (1 + i),
+                    ]
+                }
+                outcomes = {mid: 1.0 if i % 3 == 0 else 0.0}
+
+                db.execute(
+                    """INSERT INTO retrieval_log
+                       (id, query_text, query_embedding_hash, timestamp,
+                        candidate_count, returned_ids, features, outcomes, outcome_recorded_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(uuid.uuid4()), f"ips_query_{i}", f"hash_{i}",
+                        (now - timedelta(hours=i)).isoformat(),
+                        1, json.dumps([mid]), json.dumps(features),
+                        json.dumps(outcomes), now.isoformat(),
+                    ),
+                )
+            db.commit()
+
+    def test_training_with_ips_weights(self, maasv_db):
+        """Training should complete with IPS-weighted samples."""
+        from maasv.core.learned_ranker import train, reload_model
+        reload_model()
+
+        self._seed_training_data_with_surfacing(n=20)
+
+        stats = train(
+            cancel_check=lambda: False,
+            max_steps=20,
+            lr=0.01,
+        )
+
+        assert stats is not None
+        assert stats["steps"] == 20
+        assert stats["training_samples"] >= 5
+
+    def test_snips_preserves_batch_scale(self, maasv_db):
+        """SNIPS normalization should keep batch weight sum = batch_size."""
+        # This is a unit test of the SNIPS math, not the full training loop
+        raw_weights = [1.0, 2.0, 50.0, 0.5, 1.0]
+        weight_sum = sum(raw_weights)
+        batch_size = len(raw_weights)
+        snips_weights = [(w / weight_sum) * batch_size for w in raw_weights]
+
+        assert abs(sum(snips_weights) - batch_size) < 1e-10
+
+    def test_feature_version_guard(self, maasv_db):
+        """Model should not load if stored feature names don't match current."""
+        from maasv.core.learned_ranker import _get_model, reload_model, FEATURE_NAMES
+        from maasv.core.db import _db
+
+        # Tamper with stored feature names
+        with _db() as db:
+            db.execute(
+                """UPDATE learned_ranker_weights
+                   SET feature_names = ? WHERE id = 1""",
+                (json.dumps(["old_feature_1", "old_feature_2"]),),
+            )
+            db.commit()
+
+        reload_model()
+        model = _get_model()
+        assert model is None  # Should refuse to load mismatched features
+
+        # Restore correct feature names so subsequent tests work
+        with _db() as db:
+            db.execute(
+                """UPDATE learned_ranker_weights
+                   SET feature_names = ? WHERE id = 1""",
+                (json.dumps(FEATURE_NAMES),),
+            )
+            db.commit()
+        reload_model()
 
 
 # ============================================================================

@@ -5,6 +5,7 @@ Connection management, schema initialization, migrations, embedding helpers,
 and access tracking. All other core modules import from here for DB access.
 """
 
+import json
 import logging
 import re
 import sqlite3
@@ -585,6 +586,30 @@ def init_db():
 
     run_migration(db, 8, "Trigram FTS5 table for entity substring search", _migrate_entity_trigram)
 
+    # --- Migration 9: Surfacing count for IPS (Inverse Propensity Scoring) ---
+    def _migrate_surfacing_count(db: sqlite3.Connection):
+        db.execute("ALTER TABLE memories ADD COLUMN surfacing_count INTEGER DEFAULT 0")
+
+        # Backfill from retrieval_log: count how many log entries each memory_id
+        # appears in (as a key in the features JSON dict).
+        rows = db.execute("SELECT features FROM retrieval_log WHERE features IS NOT NULL").fetchall()
+        counts: dict[str, int] = {}
+        for row in rows:
+            try:
+                features_dict = json.loads(row["features"])
+                for mem_id in features_dict:
+                    counts[mem_id] = counts.get(mem_id, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        for mem_id, count in counts.items():
+            db.execute(
+                "UPDATE memories SET surfacing_count = ? WHERE id = ?",
+                (count, mem_id),
+            )
+
+    run_migration(db, 9, "Surfacing count for IPS", _migrate_surfacing_count)
+
     # Record / verify embedding model — must happen AFTER migration 7 creates the table
     import maasv
     config = maasv.get_config()
@@ -648,6 +673,26 @@ def _record_memory_access(db: sqlite3.Connection, memory_ids: list[str]):
         db.commit()
     except Exception:
         logger.warning("Failed to record memory access", exc_info=True)
+
+
+def _record_surfacing(db: sqlite3.Connection, memory_ids: list[str]):
+    """Increment surfacing_count for memories that appeared in a candidate pool.
+
+    Used by the learned ranker to track how often each memory is surfaced,
+    enabling IPS (Inverse Propensity Scoring) to correct position bias.
+    Caller handles commit.
+    """
+    if not memory_ids:
+        return
+    placeholders = ",".join("?" * len(memory_ids))
+    try:
+        db.execute(
+            f"UPDATE memories SET surfacing_count = surfacing_count + 1 "
+            f"WHERE id IN ({placeholders})",
+            memory_ids,
+        )
+    except Exception:
+        logger.warning("Failed to record memory surfacing", exc_info=True)
 
 
 def _record_entity_access(db: sqlite3.Connection, entity_ids: list[str]):
