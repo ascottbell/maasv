@@ -47,5 +47,8 @@ htmlcov/
 # Linting
 .ruff_cache/
 
+# Benchmark results
+benchmarks/results/*.json
+
 # Project-specific
 .enrich_checkpoint.json
