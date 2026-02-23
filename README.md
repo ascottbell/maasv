@@ -32,7 +32,7 @@ Most memory tools store and retrieve. That's two steps. maasv owns six:
 
 **Forget.** Stale, low-confidence memories are pruned. Orphaned entities are cleaned up. The knowledge graph stays lean. Without active forgetting, memory systems tend to get noisier over time — maasv gets sharper.
 
-**Learn.** *(Experimental — shadow mode by default.)* A small neural network (81 parameters) trains on actual retrieval patterns — which memories get re-accessed after being surfaced, and which get ignored. Over time, retrieval adapts to usage rather than relying solely on static heuristics. The ranker starts in shadow mode: it logs comparisons between its ranking and the default, but doesn't affect results. Once enough labeled data accumulates (100+ samples), you can flip it to active mode. To disable entirely: `learned_ranker_enabled=False` in config.
+**Learn.** *(Shadow mode by default — auto-graduates when ready.)* A small neural network (81 parameters) trains on actual retrieval patterns — which memories get re-accessed after being surfaced, and which get ignored. Training uses Inverse Propensity Scoring (IPS) to correct for position bias: memories that appear frequently but aren't re-accessed contribute weak signal, while rarely-surfaced memories that get used contribute strong signal. SNIPS normalization keeps training stable. The ranker starts in shadow mode, logging comparisons between its ranking and the heuristic while tracking metrics (top-5 overlap, Kendall tau, surfacing distribution). When enough labeled data accumulates and the model meets graduation criteria (NDCG, tau stability), it can auto-graduate to active mode or log a recommendation for manual activation. To disable entirely: `learned_ranker_enabled=False` in config.
 
 ## Prerequisites
 
@@ -221,12 +221,18 @@ config = MaasvConfig(
     cross_encoder_enabled=False,
     cross_encoder_model="cross-encoder/ms-marco-MiniLM-L-6-v2",
 
-    # Learned ranker (experimental — shadow mode by default)
+    # Learned ranker (shadow mode by default, auto-graduates when ready)
     learned_ranker_enabled=True,            # False to disable entirely
     learned_ranker_shadow_mode=True,        # True = log comparisons only
     learned_ranker_min_samples=100,         # Labeled samples before activation
     learned_ranker_lr=0.01,                 # Training learning rate
     learned_ranker_max_steps=50,            # Max training steps per cycle
+    learned_ranker_ips_clamp=50.0,          # Max IPS weight (prevents explosion)
+    learned_ranker_auto_graduate=False,     # True = auto-graduate when criteria met
+    learned_ranker_graduation_min_comparisons=50,   # Shadow comparisons before eligible
+    learned_ranker_graduation_min_ndcg=0.5,         # NDCG@5 threshold
+    learned_ranker_graduation_min_tau=-0.3,         # Kendall tau threshold
+    learned_ranker_graduation_max_tau_std=0.3,      # Tau stability threshold
 
     # Sleep worker timing
     idle_threshold_seconds=30,
@@ -382,11 +388,15 @@ All shared mutable state is protected by locks with double-checked locking:
 
 ## Upgrading from 0.1.x
 
-Database migrations run automatically. Two things to be aware of:
+Database migrations run automatically. Things to be aware of:
 
 1. **Embedding model tracking.** On first open with 0.2.0, maasv records your configured `embed_model` in the database. If you were using a model other than the default `qwen3-embedding:8b`, set `embed_model` in your config to match your actual model before upgrading, or you'll get a mismatch error on the second open.
 
 2. **Origin fields.** The new `origin` and `origin_interface` columns are nullable. Existing memories will have `NULL` for both, which is fine — filtering by origin simply won't match them unless you backfill.
+
+3. **Surfacing count (migration 9).** Adds `surfacing_count` to the memories table for IPS tracking. Automatically backfills from existing retrieval logs. Non-destructive — existing data is preserved.
+
+4. **Shadow metrics (migration 10).** Creates the `shadow_metrics` table for learned ranker graduation tracking. New table only — no changes to existing data.
 
 ## Status
 
