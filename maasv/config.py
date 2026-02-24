@@ -38,6 +38,10 @@ class MaasvConfig:
     min_confidence_threshold: float = 0.5
     cluster_similarity: float = 0.85
 
+    # Retrieval tuning
+    diversity_threshold: float = 0.0  # Jaccard threshold for dedup (0.0 = disabled, 0.7 = moderate)
+    graph_slot_injection: bool = False  # Force-inject a graph result into last slot
+
     # Cross-encoder reranking (opt-in: requires sentence-transformers + torch ~2GB)
     cross_encoder_enabled: bool = False
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"

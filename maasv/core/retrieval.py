@@ -41,7 +41,7 @@ def _importance_score(
     (have vector distance) and supplementary (no vector distance) lists,
     both sorted by _imp_score descending.
 
-    Scoring: (1 - distance) * importance * decay * log(2 + access_count) + agreement_bonus
+    Scoring: (1 - distance) + 0.05 * importance * decay * ips_utility + agreement_bonus
     """
     primary = []
     supplementary = []
@@ -74,13 +74,18 @@ def _importance_score(
         distance = vector_distances.get(mem['id'])
 
         if distance is not None:
-            base_score = (1.0 - distance) * importance * decay_factor * ips_utility
+            # Vector similarity is the primary signal. Importance, decay, and
+            # usage are additive tiebreakers — they influence ordering among
+            # close matches but can't override a strong vector match.
+            vector_sim = 1.0 - distance
+            tiebreaker = 0.05 * importance * decay_factor * ips_utility
             signal_count = 1
             if mem['id'] in bm25_ids:
                 signal_count += 1
             if mem['id'] in graph_ids:
                 signal_count += 1
-            mem['_imp_score'] = base_score + (signal_count - 1) * 0.01
+            agreement_bonus = (signal_count - 1) * 0.03
+            mem['_imp_score'] = vector_sim + tiebreaker + agreement_bonus
             primary.append(mem)
         else:
             mem['_imp_score'] = importance * decay_factor * ips_utility * 0.0001
@@ -714,75 +719,63 @@ def find_similar_memories(
                 mem['_score'] = mem['_imp_score']
             scored_pool = primary + supplementary
 
-        # === Diversity-aware selection (MMR-inspired) ===
-        # Greedily select from scored candidates, skipping those too similar to
-        # already-selected results. Prevents near-duplicate memories from filling
-        # all slots. Threshold adapts: short memories (< 12 words) use 0.5,
-        # longer memories use 0.7.
-        result = []
-        selected_words = []
-
-        for mem in scored_pool:
-            if len(result) >= limit:
-                break
-            mem_words = set(re.findall(r'\w+', mem.get('content', '').lower()))
-            threshold = 0.5 if len(mem_words) < 12 else 0.7
-            is_diverse = True
-            for sw in selected_words:
-                if not mem_words or not sw:
-                    continue
-                intersection = len(mem_words & sw)
-                union = len(mem_words | sw)
-                jaccard = intersection / union if union > 0 else 0
-                smaller = min(len(mem_words), len(sw))
-                containment = intersection / smaller if smaller > 0 else 0
-                if jaccard > threshold or containment > 0.8:
-                    is_diverse = False
+        # === Diversity-aware selection (optional) ===
+        # When diversity_threshold > 0, greedily select from scored candidates,
+        # skipping those too similar (by Jaccard) to already-selected results.
+        config = maasv.get_config()
+        if config.diversity_threshold > 0:
+            result = []
+            selected_words = []
+            threshold = config.diversity_threshold
+            for mem in scored_pool:
+                if len(result) >= limit:
                     break
-            if is_diverse:
-                result.append(mem)
-                selected_words.append(mem_words)
+                mem_words = set(re.findall(r'\w+', mem.get('content', '').lower()))
+                is_diverse = True
+                for sw in selected_words:
+                    if not mem_words or not sw:
+                        continue
+                    intersection = len(mem_words & sw)
+                    union = len(mem_words | sw)
+                    jaccard = intersection / union if union > 0 else 0
+                    if jaccard > threshold:
+                        is_diverse = False
+                        break
+                if is_diverse:
+                    result.append(mem)
+                    selected_words.append(mem_words)
+        else:
+            result = scored_pool[:limit]
 
-        # === Graph slot injection ===
-        # If the graph signal found content (via 1-hop expansion) that didn't
-        # make it into the top results, inject the graph result that mentions
-        # the most graph-connected entity names. This ensures graph-discovered
-        # connections (e.g., MyApp->FastAPI) surface even when importance scoring
-        # favors high-access vector matches.
-        if graph_results and len(result) >= limit:
+        # === Graph slot injection (optional) ===
+        # When enabled, if the graph signal found content via 1-hop expansion
+        # that didn't make it into results, inject the best graph match into
+        # the last slot. The graph signal always contributes through normal
+        # RRF fusion regardless of this setting.
+        if config.graph_slot_injection and graph_results and len(result) >= limit:
             result_ids = {m['id'] for m in result}
             result_content = " ".join(m.get('content', '').lower() for m in result)
             graph_only = [m for m in graph_results if m['id'] not in result_ids]
 
             if graph_only:
-                # Get expanded entity names from graph
                 expanded_names = _get_graph_expanded_names(db, query)
-
                 if expanded_names:
-                    # Filter to entity names not already mentioned in results
                     novel_names = {n for n in expanded_names
                                    if n not in result_content}
-
                     if novel_names:
-                        # Score candidates by how many novel entity names they contain.
-                        # Only consider candidates that mention at least one query term
-                        # — the injection should bring in relevant novel content, not
-                        # random memories that happen to mention many entity names.
                         query_terms = [t.lower() for t in query.split() if len(t) >= 3]
                         best_candidate = None
-                        best_score = (0, 0)  # (novel_count, query_term_count)
-
+                        best_score = (0, 0)
                         for gm in graph_only:
                             content_lower = gm.get('content', '').lower()
                             query_count = sum(1 for t in query_terms if t in content_lower)
                             if query_terms and query_count == 0:
-                                continue  # Skip candidates irrelevant to the query
+                                continue
                             novel_count = sum(1 for n in novel_names if n in content_lower)
                             score = (novel_count, query_count)
                             if score > best_score:
                                 best_score = score
                                 best_candidate = gm
-
                         if best_candidate and best_score[0] > 0:
                             result[-1] = best_candidate
 

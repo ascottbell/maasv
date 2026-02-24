@@ -50,5 +50,9 @@ htmlcov/
 # Benchmark results
 benchmarks/results/*.json
 
+# Real-data benchmark PII (memory content + judgments)
+benchmarks/real_data/queries.json
+benchmarks/real_data/judgments.json
+
 # Project-specific
 .enrich_checkpoint.json
