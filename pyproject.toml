@@ -36,8 +36,13 @@ server = [
 anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.50"]
 voyage = ["voyageai>=0.3"]
+mcp = [
+    "mcp[cli]>=1.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
 all = [
-    "maasv[server,anthropic,voyage]",
+    "maasv[server,mcp,anthropic,voyage]",
 ]
 reranking = [
     "sentence-transformers>=2.0.0",
@@ -50,6 +55,7 @@ dev = [
 
 [project.scripts]
 maasv-server = "maasv.server.main:run"
+maasv-mcp = "maasv.mcp_server.server:run"
 
 [project.urls]
 Homepage = "https://maasv.com"

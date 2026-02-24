@@ -9,6 +9,7 @@ from maasv.core.retrieval import (
     find_similar_memories,
     find_by_subject,
     search_fts,
+    get_tiered_memory_context,
 )
 from maasv.core.graph import (
     create_entity,
@@ -22,6 +23,7 @@ from maasv.core.graph import (
     get_causal_chain,
     graph_query,
     get_entity_profile,
+    update_relationship_value,
 )
 from maasv.core.wisdom import (
     log_reasoning,
