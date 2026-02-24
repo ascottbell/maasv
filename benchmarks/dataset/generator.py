@@ -146,21 +146,21 @@ CLUSTERS: dict[str, dict] = {
             ("Alex", "parent_of", "Sophie"),
         ],
         "memories": [
-            "Maria is my wife, she works in finance doing consulting",              # 0
+            "Maria is my wife, she works in finance doing consulting",             # 0
             "Ethan is my son, born March 15th, currently 8 years old",             # 1
-            "Sophie is my daughter, born September 22nd, currently 5 years old",      # 2
-            "Ethan loves building with Lego and playing Minecraft",                 # 3
-            "Sophie is really into drawing and painting right now",                  # 4
-            "We live in the Riverside neighborhood downtown",                         # 5
-            "The family has a cabin upstate near the lake",                   # 6
+            "Sophie is my daughter, born September 22nd, currently 5 years old",   # 2
+            "Ethan loves building with Lego and playing Minecraft",                # 3
+            "Sophie is really into drawing and painting right now",                # 4
+            "We live in the Riverside neighborhood downtown",                      # 5
+            "The family has a cabin upstate near the lake",                        # 6
             "Maria and I usually do date night on Fridays",                        # 7
-            "Ethan started piano lessons last month",                               # 8
-            "Sophie wants a birthday party at the science museum",                   # 9
+            "Ethan started piano lessons last month",                              # 8
+            "Sophie wants a birthday party at the science museum",                 # 9
             "Family movie night is usually on Sundays",                            # 10
             "Kids bedtime routine is bath, story, lights out by 8pm",              # 11
             "Maria prefers Italian restaurants for date night",                     # 12
-            "Ethan has soccer practice on Wednesdays after school",                 # 13
-            "Sophie goes to kindergarten at Lincoln Elementary",                                  # 14
+            "Ethan has soccer practice on Wednesdays after school",                # 13
+            "Sophie goes to kindergarten at Lincoln Elementary",                    # 14
         ],
         "queries": [
             # BM25: exact name match
@@ -303,15 +303,15 @@ CLUSTERS: dict[str, dict] = {
             ("Alex", "has_property_in", "Lakeside Cabin"),
         ],
         "memories": [
-            "The downtown office is on the 12th floor at 100 Main Street",        # 0
-            "The lakeside cabin has a detached garage we use as an office",    # 1
+            "The downtown office is on the 12th floor at 100 Main Street",          # 0
+            "The lakeside cabin has a detached garage we use as an office",         # 1
             "Conference room A on the 12th floor has the best video setup",         # 2
             "The office kitchen was renovated and now has a good espresso machine", # 3
-            "The lakeside property has 2 acres with a garden",                 # 4
-            "Parking at the downtown office building is validated for 2 hours",     # 5
+            "The lakeside property has 2 acres with a garden",                      # 4
+            "Parking at the downtown office building is validated for 2 hours",      # 5
             "The office moved from floor 8 to floor 12 last year",                  # 6
-            "The lakeside cabin needs a new roof before winter",               # 7
-            "Closest bus stop to the office is Central Station",             # 8
+            "The lakeside cabin needs a new roof before winter",                     # 7
+            "Closest bus stop to the office is Central Station",                     # 8
             "The office has a standing desk policy, everyone gets one",              # 9
         ],
         "queries": [
