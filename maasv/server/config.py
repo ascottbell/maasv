@@ -25,6 +25,17 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "claude-haiku-4-5-20251001"
 
+    # Per-operation LLM overrides (optional — falls back to llm_* above)
+    extraction_llm_provider: str = ""
+    extraction_llm_api_key: str = ""
+    extraction_llm_model: str = ""
+    inference_llm_provider: str = ""
+    inference_llm_api_key: str = ""
+    inference_llm_model: str = ""
+    review_llm_provider: str = ""
+    review_llm_api_key: str = ""
+    review_llm_model: str = ""
+
     # Embedding provider: "ollama" (default), "voyage", or "openai"
     embed_provider: str = "ollama"
     embed_api_key: str = ""

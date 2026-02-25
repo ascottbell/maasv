@@ -111,7 +111,7 @@ JSON output:"""
 
     try:
         config = maasv.get_config()
-        llm = maasv.get_llm()
+        llm = maasv.get_llm_for("review")
 
         text = llm.call(
             messages=[{"role": "user", "content": prompt}],

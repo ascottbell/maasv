@@ -266,7 +266,7 @@ class EntityExtractor:
         import maasv
 
         config = maasv.get_config()
-        llm = maasv.get_llm()
+        llm = maasv.get_llm_for("extraction")
 
         prompt_template = _build_extraction_prompt(config.known_entities)
         prompt = prompt_template.replace("__SUMMARY__", summary).replace("__TOPIC__", topic or "General conversation")

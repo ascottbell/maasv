@@ -148,3 +148,25 @@ def get_embed() -> EmbedProvider:
     if not _initialized or _embed is None:
         raise RuntimeError("maasv not initialized. Call maasv.init() first.")
     return _embed
+
+
+def get_llm_for(operation: str) -> LLMProvider:
+    """Get the LLM provider for a specific operation.
+
+    Checks for a per-operation override in config (e.g., config.extraction_llm),
+    then falls back to the default LLM provider.
+
+    Args:
+        operation: One of "extraction", "inference", "review".
+
+    Returns:
+        The LLM provider to use for this operation.
+
+    Raises:
+        RuntimeError: If no LLM is available (neither per-operation nor default).
+    """
+    config = get_config()
+    override = getattr(config, f"{operation}_llm", None)
+    if override is not None:
+        return override
+    return get_llm()

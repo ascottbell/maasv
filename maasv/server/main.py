@@ -12,16 +12,38 @@ from maasv.server.config import settings
 logger = logging.getLogger("maasv_server")
 
 
+def _create_operation_llm(settings, operation: str):
+    """Create a per-operation LLM provider if configured, else return None."""
+    from maasv.server.providers import create_llm
+
+    provider = getattr(settings, f"{operation}_llm_provider", "")
+    api_key = getattr(settings, f"{operation}_llm_api_key", "") or settings.llm_api_key
+    model = getattr(settings, f"{operation}_llm_model", "") or settings.llm_model
+    if not provider:
+        return None
+    return create_llm(provider, api_key, model)
+
+
 def _init_maasv():
     """Initialize maasv with configured providers."""
     import maasv
     from maasv.config import MaasvConfig
     from maasv.server.providers import create_embed, create_llm
 
+    # Per-operation LLM overrides
+    extraction_llm = _create_operation_llm(settings, "extraction")
+    inference_llm = _create_operation_llm(settings, "inference")
+    review_llm = _create_operation_llm(settings, "review")
+
     config = MaasvConfig(
         db_path=Path(settings.db_path).resolve(),
         embed_dims=settings.embed_dims,
-        extraction_model=settings.llm_model,
+        extraction_model=settings.extraction_llm_model or settings.llm_model,
+        inference_model=settings.inference_llm_model or settings.llm_model,
+        review_model=settings.review_llm_model or settings.llm_model,
+        extraction_llm=extraction_llm,
+        inference_llm=inference_llm,
+        review_llm=review_llm,
         protected_categories=settings.protected_categories_set,
         stale_days=settings.stale_days,
         similarity_threshold=settings.similarity_threshold,
