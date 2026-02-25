@@ -111,14 +111,32 @@ def _query_to_entity_fts(query: str) -> str:
     names — which misses the "MyApp" entity. Converting to "MyApp OR architecture"
     ensures we find entities matching ANY query term.
 
+    Also adds prefix matching (word*) for partial matches and quoted phrases
+    for multi-word entity names that might appear in the query.
+
     Strips FTS5 special characters and skips short/common words.
     """
-    stop_words = {"the", "a", "an", "is", "of", "in", "on", "for", "and", "or", "to", "with"}
+    stop_words = {
+        "the", "a", "an", "is", "of", "in", "on", "for", "and", "or",
+        "to", "with", "what", "how", "why", "when", "where", "who",
+        "does", "do", "did", "has", "have", "had", "was", "were", "be",
+        "about", "from", "that", "this", "which", "would", "could", "should",
+        "my", "his", "her", "its", "our", "your", "their", "me", "him",
+        "it", "us", "them", "not", "no", "yes", "can", "will",
+    }
     words = re.findall(r"\w+", query)
     terms = [w for w in words if len(w) > 1 and w.lower() not in stop_words]
     if not terms:
         return query
-    return " OR ".join(terms)
+
+    fts_parts = []
+    # Add individual terms with prefix matching for longer words
+    for t in terms:
+        fts_parts.append(t)
+        if len(t) >= 4:
+            fts_parts.append(f"{t}*")
+
+    return " OR ".join(fts_parts)
 
 
 def _expand_query_from_graph(db, query: str) -> str:
@@ -346,6 +364,9 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
 
     # Step 2: 1-hop expansion — follow non-noise relationships
     # Only collect EXPANDED entity names (from related entities, not the query matches)
+    # Cardinality filtering: skip high-cardinality entities (hubs like "Python"
+    # that connect to hundreds of memories and dilute results).
+    MAX_ENTITY_RELATIONSHIPS = 50  # entities with more are hub noise
     expanded_entity_names = set()
     if direct_entity_ids:
         placeholders = ",".join("?" * len(direct_entity_ids))
@@ -353,7 +374,10 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
             related_rows = db.execute(
                 f"""
                 SELECT DISTINCT
-                    e.name
+                    e.id, e.name,
+                    (SELECT COUNT(*) FROM relationships r2
+                     WHERE (r2.subject_id = e.id OR r2.object_id = e.id)
+                     AND r2.valid_to IS NULL) as rel_count
                 FROM relationships r
                 JOIN entities e ON (
                     CASE
@@ -363,14 +387,16 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 ) = e.id
                 WHERE (r.subject_id IN ({placeholders}) OR r.object_id IN ({placeholders}))
                 AND r.valid_to IS NULL
-                LIMIT 20
+                LIMIT 30
             """,
                 list(direct_entity_ids) * 3,
             ).fetchall()
 
             for row in related_rows:
                 if row["name"] and row["name"] not in direct_entity_names:
-                    expanded_entity_names.add(row["name"])
+                    # Cardinality filter: skip hub entities
+                    if row["rel_count"] <= MAX_ENTITY_RELATIONSHIPS:
+                        expanded_entity_names.add(row["name"])
         except Exception:
             logger.debug("1-hop expansion failed", exc_info=True)
 
@@ -516,6 +542,28 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 break
 
     fts_results = fts_results[:limit]
+
+    # Step 3b: Entity density scoring — rescore graph results by how many
+    # relevant entity names appear in their content. Memories mentioning
+    # multiple relevant entities are more strongly connected in the graph
+    # and should rank higher than single-entity mentions.
+    if all_entity_names and fts_results:
+        lowered_names = {n.lower() for n in all_entity_names}
+        for mem in fts_results:
+            content_lower = (mem.get("content") or "").lower()
+            subject_lower = (mem.get("subject") or "").lower()
+            text = content_lower + " " + subject_lower
+            match_count = sum(1 for n in lowered_names if n in text)
+            # Scale: 1 match = 0.6, 2 = 0.8, 3+ = 1.0
+            # This replaces the flat 1.0/0.8 with a gradient
+            if match_count >= 3:
+                mem["graph_score"] = 1.0
+            elif match_count == 2:
+                mem["graph_score"] = 0.8
+            elif match_count == 1:
+                mem["graph_score"] = 0.6
+            else:
+                mem["graph_score"] = 0.4
 
     # Step 4: Fallback — subject LIKE matching (catches memories without FTS hits)
     # NOTE: where_clause is built from entity names via parameterized LIKE (?).

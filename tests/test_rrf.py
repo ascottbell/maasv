@@ -1,6 +1,6 @@
-"""Tests for Reciprocal Rank Fusion with per-signal k values."""
+"""Tests for Reciprocal Rank Fusion and graph signal improvements."""
 
-from maasv.core.retrieval import _reciprocal_rank_fusion
+from maasv.core.retrieval import _reciprocal_rank_fusion, _query_to_entity_fts
 
 
 def _make_items(ids: list[str]) -> list[dict]:
@@ -100,3 +100,57 @@ class TestRRF:
 
         # Lower k should produce a higher ratio (more top-heavy)
         assert low_ratio > high_ratio
+
+
+class TestEntityFTS:
+    def test_basic_or_join(self):
+        """Query terms are joined with OR."""
+        result = _query_to_entity_fts("MyApp architecture")
+        assert "OR" in result
+        assert "MyApp" in result
+        assert "architecture" in result
+
+    def test_stop_words_removed(self):
+        """Common stop words are filtered out."""
+        result = _query_to_entity_fts("what is the architecture of MyApp")
+        assert "what" not in result.split()
+        assert "the" not in result.split()
+        assert "MyApp" in result
+
+    def test_expanded_stop_words(self):
+        """Extended stop words like 'how', 'does', 'about' are filtered."""
+        result = _query_to_entity_fts("how does MyApp work")
+        terms = [t.strip() for t in result.replace(" OR ", "|").split("|")]
+        assert "how" not in terms
+        assert "does" not in terms
+        assert "MyApp" in terms
+
+    def test_prefix_matching_for_long_words(self):
+        """Words >= 4 chars get prefix matching added."""
+        result = _query_to_entity_fts("FastAPI configuration")
+        assert "FastAPI*" in result
+        assert "configuration*" in result
+
+    def test_short_words_no_prefix(self):
+        """Words < 4 chars don't get prefix matching."""
+        result = _query_to_entity_fts("API db setup")
+        assert "API*" not in result
+        assert "db*" not in result
+
+    def test_single_word_query(self):
+        """Single meaningful word produces result."""
+        result = _query_to_entity_fts("FastAPI")
+        assert "FastAPI" in result
+
+    def test_all_stop_words_returns_original(self):
+        """If all words are stop words, return original query."""
+        result = _query_to_entity_fts("is it a")
+        assert result == "is it a"
+
+    def test_short_words_filtered(self):
+        """Single-char words are filtered."""
+        result = _query_to_entity_fts("a b MyApp")
+        terms = [t.strip() for t in result.replace(" OR ", "|").split("|")]
+        # 'a' and 'b' should not appear as terms
+        assert "a" not in terms
+        assert "b" not in terms
