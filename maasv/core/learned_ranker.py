@@ -256,7 +256,10 @@ def extract_features(
             days_old = (now - created).total_seconds() / 86400
         except (ValueError, TypeError, KeyError):
             days_old = 0
-        age_decay = math.exp(-days_old / 180)
+        import maasv as _maasv
+        half_life = _maasv.get_config().decay_half_life_days
+        tau = half_life / math.log(2)
+        age_decay = math.exp(-days_old / tau)
 
     # 6. IPS utility (access_count / surfacing_count, normalized to [0, 1])
     access_count = mem.get("access_count") or 0

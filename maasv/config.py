@@ -52,6 +52,9 @@ class MaasvConfig:
     rrf_k_vector: int = 60  # RRF k for vector signal (higher = less top-heavy)
     rrf_k_bm25: int = 60  # RRF k for BM25 signal
     rrf_k_graph: int = 60  # RRF k for graph signal
+    rrf_k_recency: int = 60  # RRF k for recency signal
+    recency_signal: bool = True  # Include recency-sorted candidates as 4th RRF signal
+    decay_half_life_days: int = 30  # Days for decay to reach 0.5 (shorter = stronger recency)
     sufficiency_threshold: float = 0.0  # L2 distance threshold for early exit (0.0 = disabled)
     sufficiency_min_agreement: int = 2  # Min signals agreeing to trigger early exit
 
