@@ -41,8 +41,11 @@ mcp = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
 ]
+langchain = [
+    "langchain-core>=0.3.0",
+]
 all = [
-    "maasv[server,mcp,anthropic,voyage]",
+    "maasv[server,mcp,anthropic,voyage,langchain]",
 ]
 reranking = [
     "sentence-transformers>=2.0.0",
@@ -51,6 +54,8 @@ reranking = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    "ruff>=0.4",
+    "mypy>=1.10",
 ]
 
 [project.scripts]
@@ -67,3 +72,18 @@ exclude = ["scripts*", "examples*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+per-file-ignores = {"__init__.py" = ["F401"]}
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
