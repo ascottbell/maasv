@@ -81,4 +81,4 @@ def precision_at_k(
     if not top_k:
         return 0.0
     hits = sum(1 for mid in top_k if mid in relevant_ids)
-    return hits / len(top_k)
+    return hits / k

@@ -738,17 +738,20 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-_FTS5_SPECIAL_RE = re.compile(r"[\"*()^]")
+_FTS5_SPECIAL_RE = re.compile(r"[\"*()^?'.~:{}[\]+]")
 _FTS5_OPERATOR_RE = re.compile(r"\b(NEAR|NOT)\b", re.IGNORECASE)
+_FTS5_HYPHEN_RE = re.compile(r"(?<=\w)-(?=\w)")
 
 
 def _sanitize_fts_input(text: str) -> str:
     """Strip FTS5 special syntax from raw text for safe use in MATCH queries.
 
-    Removes characters that cause syntax errors (", *, (, ), ^) and operators
-    that can produce unexpected results (NEAR, NOT). Preserves OR/AND since
-    they are harmless (just modify query semantics) and used by callers.
+    Removes characters that cause syntax errors and operators that can produce
+    unexpected results (NEAR, NOT). Converts intra-word hyphens to spaces
+    (e.g. "self-reflection" -> "self reflection") to avoid FTS5 column filter
+    misparse. Preserves OR/AND since they are used by callers for query logic.
     """
+    text = _FTS5_HYPHEN_RE.sub(" ", text)
     text = _FTS5_SPECIAL_RE.sub(" ", text)
     text = _FTS5_OPERATOR_RE.sub(" ", text)
     return " ".join(text.split())

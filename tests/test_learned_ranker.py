@@ -393,11 +393,12 @@ class TestFeatureExtraction:
             "category": "project",
             "importance": 0.5,
             "access_count": 0,
-            "created_at": (now - timedelta(days=180)).isoformat(),
+            "created_at": (now - timedelta(days=30)).isoformat(),
         }
         features = extract_features(old_mem, {}, {}, {}, set(), now)
-        # exp(-180/180) = exp(-1) ≈ 0.368
-        assert abs(features[4] - math.exp(-1)) < 0.01
+        # With 30-day half-life: tau = 30/ln(2) ≈ 43.3
+        # exp(-30/43.3) = 0.5 (exactly one half-life)
+        assert abs(features[4] - 0.5) < 0.01
 
     def test_ips_utility_with_surfacing(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features

@@ -110,7 +110,13 @@ def _importance_score(
                 days_old = (now - created).total_seconds() / 86400
             except (ValueError, TypeError):
                 days_old = 0
-            decay_factor = math.exp(-days_old / 180)
+            import maasv as _maasv
+            half_life = _maasv.get_config().decay_half_life_days
+            # Convert half-life to exponential decay constant:
+            # exp(-days / tau) = 0.5 when days = half_life
+            # => tau = half_life / ln(2)
+            tau = half_life / math.log(2)
+            decay_factor = math.exp(-days_old / tau)
 
         # IPS utility: access_count/surfacing_count measures conversion rate.
         # High ratio = surfaced rarely but used often = genuinely useful.
@@ -126,16 +132,19 @@ def _importance_score(
         distance = vector_distances.get(mem["id"])
 
         if distance is not None:
-            # Vector similarity is the primary signal. Importance, decay, and
-            # usage are additive tiebreakers — they influence ordering among
-            # close matches but can't override a strong vector match.
+            # Vector similarity is the primary signal. Decay is a meaningful
+            # secondary signal — among semantically similar candidates, prefer
+            # recent ones. A 0.1 weight means a fully-decayed memory (decay=0)
+            # loses 0.1 vs a brand-new one (decay=1), enough to reorder
+            # candidates within typical vector similarity clusters (~0.05 spread).
             vector_sim = 1.0 - distance
-            tiebreaker = 0.05 * importance * decay_factor * ips_utility
+            recency_bonus = 0.1 * decay_factor
+            metadata_bonus = 0.03 * importance * ips_utility
             # Continuous agreement bonus: weighted by actual signal strength
             bm25_val = bm25_scores.get(mem["id"], 0.0)
             graph_val = graph_scores.get(mem["id"], 0.0)
             agreement_bonus = 0.03 * bm25_val + 0.03 * graph_val
-            mem["_imp_score"] = vector_sim + tiebreaker + agreement_bonus + freq_bonus
+            mem["_imp_score"] = vector_sim + recency_bonus + metadata_bonus + agreement_bonus + freq_bonus
             primary.append(mem)
         else:
             mem["_imp_score"] = importance * decay_factor * ips_utility * 0.0001 + freq_bonus
@@ -255,6 +264,30 @@ def _expand_query_from_graph(db, query: str) -> str:
     return query + " OR " + " OR ".join(expansion_terms)
 
 
+def _bm25_query_to_or(query: str) -> str:
+    """Convert a sanitized query to OR-separated terms for BM25 recall.
+
+    FTS5 defaults to AND between tokens, requiring ALL words to appear in a
+    single memory.  For short, single-fact memories this kills recall.
+    OR lets BM25 rank by how many terms match — exactly what tf-idf scoring
+    is designed for.  Stop words are removed to reduce noise.
+    """
+    stop_words = {
+        "the", "a", "an", "is", "of", "in", "on", "for", "and", "or",
+        "to", "with", "what", "how", "why", "when", "where", "who",
+        "does", "do", "did", "has", "have", "had", "was", "were", "be",
+        "about", "from", "that", "this", "which", "would", "could", "should",
+        "my", "his", "her", "its", "our", "your", "their", "me", "him",
+        "it", "us", "them", "not", "no", "yes", "can", "will", "are",
+        "tell", "describe", "recently", "currently",
+    }
+    words = re.findall(r"\w+", query)
+    terms = [w for w in words if len(w) > 1 and w.lower() not in stop_words]
+    if not terms:
+        return query
+    return " OR ".join(terms)
+
+
 def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
     """
     Return memories ranked by BM25 relevance from the FTS5 index.
@@ -267,6 +300,7 @@ def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
     query = _sanitize_fts_input(query)
     if not query:
         return []
+    query = _bm25_query_to_or(query)
     expanded_query = _expand_query_from_graph(db, query)
     if expanded_query != query:
         logger.debug("BM25 query expanded: %s -> %s", query, expanded_query)
@@ -867,11 +901,28 @@ def find_similar_memories(
         else:
             graph_results = _find_memories_by_graph(db, query, limit=RETRIEVAL_DEPTH)
 
+        # === Signal 4: Recency (sort all candidates by date, newest first) ===
+        if config.recency_signal:
+            # Pool all unique candidates from other signals, sort by created_at DESC
+            recency_pool: dict[str, dict] = {}
+            for signal_results in (vector_results, bm25_results, graph_results):
+                for r in signal_results:
+                    if r["id"] not in recency_pool:
+                        recency_pool[r["id"]] = r
+            recency_results = sorted(
+                recency_pool.values(),
+                key=lambda r: r.get("created_at", ""),
+                reverse=True,
+            )
+        else:
+            recency_results = []
+
         # === Fusion: Reciprocal Rank Fusion ===
         signals_with_k = [
             (vector_results, config.rrf_k_vector),
             (bm25_results, config.rrf_k_bm25),
             (graph_results, config.rrf_k_graph),
+            (recency_results, config.rrf_k_recency),
         ]
         # Only include non-empty signals, keeping k values aligned
         active_pairs = [(s, k) for s, k in signals_with_k if s]
