@@ -9,16 +9,16 @@ import logging
 import math
 import re
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from maasv.core.db import (
     _db,
+    _escape_like,
+    _record_memory_access,
+    _sanitize_fts_input,
     get_query_embedding,
     serialize_embedding,
-    _record_memory_access,
-    _escape_like,
-    _sanitize_fts_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # IMPORTANCE SCORING
 # ============================================================================
+
 
 def _importance_score(
     candidates: list[dict],
@@ -47,15 +48,15 @@ def _importance_score(
     supplementary = []
 
     for mem in candidates:
-        importance = mem.get('importance') or 0.5
-        access_count = mem.get('access_count') or 0
-        surfacing_count = mem.get('surfacing_count') or 0
+        importance = mem.get("importance") or 0.5
+        access_count = mem.get("access_count") or 0
+        surfacing_count = mem.get("surfacing_count") or 0
 
-        if mem.get('category') in protected:
+        if mem.get("category") in protected:
             decay_factor = 1.0
         else:
             try:
-                created = datetime.fromisoformat(mem['created_at'])
+                created = datetime.fromisoformat(mem["created_at"])
                 if created.tzinfo is None:
                     created = created.replace(tzinfo=timezone.utc)
                 days_old = (now - created).total_seconds() / 86400
@@ -71,7 +72,7 @@ def _importance_score(
         else:
             ips_utility = math.log(2 + min(access_count, 5))
 
-        distance = vector_distances.get(mem['id'])
+        distance = vector_distances.get(mem["id"])
 
         if distance is not None:
             # Vector similarity is the primary signal. Importance, decay, and
@@ -80,19 +81,19 @@ def _importance_score(
             vector_sim = 1.0 - distance
             tiebreaker = 0.05 * importance * decay_factor * ips_utility
             signal_count = 1
-            if mem['id'] in bm25_ids:
+            if mem["id"] in bm25_ids:
                 signal_count += 1
-            if mem['id'] in graph_ids:
+            if mem["id"] in graph_ids:
                 signal_count += 1
             agreement_bonus = (signal_count - 1) * 0.03
-            mem['_imp_score'] = vector_sim + tiebreaker + agreement_bonus
+            mem["_imp_score"] = vector_sim + tiebreaker + agreement_bonus
             primary.append(mem)
         else:
-            mem['_imp_score'] = importance * decay_factor * ips_utility * 0.0001
+            mem["_imp_score"] = importance * decay_factor * ips_utility * 0.0001
             supplementary.append(mem)
 
-    primary.sort(key=lambda m: m['_imp_score'], reverse=True)
-    supplementary.sort(key=lambda m: m['_imp_score'], reverse=True)
+    primary.sort(key=lambda m: m["_imp_score"], reverse=True)
+    supplementary.sort(key=lambda m: m["_imp_score"], reverse=True)
 
     return primary, supplementary
 
@@ -100,6 +101,7 @@ def _importance_score(
 # ============================================================================
 # MULTI-SIGNAL RETRIEVAL HELPERS
 # ============================================================================
+
 
 def _query_to_entity_fts(query: str) -> str:
     """
@@ -112,7 +114,7 @@ def _query_to_entity_fts(query: str) -> str:
     Strips FTS5 special characters and skips short/common words.
     """
     stop_words = {"the", "a", "an", "is", "of", "in", "on", "for", "and", "or", "to", "with"}
-    words = re.findall(r'\w+', query)
+    words = re.findall(r"\w+", query)
     terms = [w for w in words if len(w) > 1 and w.lower() not in stop_words]
     if not terms:
         return query
@@ -131,13 +133,16 @@ def _expand_query_from_graph(db, query: str) -> str:
     """
     entity_fts_query = _query_to_entity_fts(query)
     try:
-        entities = db.execute("""
+        entities = db.execute(
+            """
             SELECT e.id, e.name
             FROM entities_fts f
             JOIN entities e ON f.rowid = e.rowid
             WHERE entities_fts MATCH ?
             LIMIT 5
-        """, (entity_fts_query,)).fetchall()
+        """,
+            (entity_fts_query,),
+        ).fetchall()
     except Exception:
         return query
 
@@ -148,7 +153,8 @@ def _expand_query_from_graph(db, query: str) -> str:
     placeholders = ",".join("?" * len(entity_ids))
 
     try:
-        related = db.execute(f"""
+        related = db.execute(
+            f"""
             SELECT DISTINCT e.name
             FROM relationships r
             JOIN entities e ON (
@@ -160,7 +166,9 @@ def _expand_query_from_graph(db, query: str) -> str:
             WHERE (r.subject_id IN ({placeholders}) OR r.object_id IN ({placeholders}))
             AND r.valid_to IS NULL
             LIMIT 10
-        """, entity_ids * 3).fetchall()
+        """,
+            entity_ids * 3,
+        ).fetchall()
     except Exception:
         return query
 
@@ -169,7 +177,7 @@ def _expand_query_from_graph(db, query: str) -> str:
     for row in related:
         name = row["name"]
         if name:
-            clean = re.sub(r'[^\w\s]', '', name).strip()
+            clean = re.sub(r"[^\w\s]", "", name).strip()
             if clean and clean.lower() not in query.lower():
                 expansion_terms.append(f'"{clean}"')
 
@@ -197,7 +205,8 @@ def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
         logger.debug("BM25 query expanded: %s -> %s", query, expanded_query)
 
     try:
-        rows = db.execute("""
+        rows = db.execute(
+            """
             SELECT m.id, m.content, m.category, m.subject, m.confidence,
                    m.created_at, m.metadata, m.importance, m.access_count,
                    m.surfacing_count, m.origin, m.origin_interface,
@@ -208,14 +217,17 @@ def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
             AND m.superseded_by IS NULL
             ORDER BY bm25(memories_fts, 10.0, 1.0, 5.0)
             LIMIT ?
-        """, (expanded_query, limit)).fetchall()
+        """,
+            (expanded_query, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         logger.debug("BM25 search failed for expanded query: %s", expanded_query, exc_info=True)
         # Fallback: try original query without expansion
         if expanded_query != query:
             try:
-                rows = db.execute("""
+                rows = db.execute(
+                    """
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
                            m.surfacing_count,
@@ -226,7 +238,9 @@ def _find_memories_by_bm25(db, query: str, limit: int = 50) -> list[dict]:
                     AND m.superseded_by IS NULL
                     ORDER BY bm25(memories_fts, 10.0, 1.0, 5.0)
                     LIMIT ?
-                """, (query, limit)).fetchall()
+                """,
+                    (query, limit),
+                ).fetchall()
                 return [dict(r) for r in rows]
             except Exception:
                 logger.debug("BM25 fallback also failed for: %s", query, exc_info=True)
@@ -240,13 +254,16 @@ def _get_graph_expanded_names(db, query: str) -> set[str]:
     """
     entity_fts_query = _query_to_entity_fts(query)
     try:
-        entities = db.execute("""
+        entities = db.execute(
+            """
             SELECT e.id, e.name
             FROM entities_fts f
             JOIN entities e ON f.rowid = e.rowid
             WHERE entities_fts MATCH ?
             LIMIT 10
-        """, (entity_fts_query,)).fetchall()
+        """,
+            (entity_fts_query,),
+        ).fetchall()
     except Exception:
         return set()
 
@@ -259,7 +276,8 @@ def _get_graph_expanded_names(db, query: str) -> set[str]:
 
     expanded = set()
     try:
-        rows = db.execute(f"""
+        rows = db.execute(
+            f"""
             SELECT DISTINCT e.name
             FROM relationships r
             JOIN entities e ON (
@@ -269,7 +287,9 @@ def _get_graph_expanded_names(db, query: str) -> set[str]:
             WHERE (r.subject_id IN ({placeholders}) OR r.object_id IN ({placeholders}))
             AND r.valid_to IS NULL
             LIMIT 30
-        """, direct_ids * 3).fetchall()
+        """,
+            direct_ids * 3,
+        ).fetchall()
         for r in rows:
             if r["name"] and r["name"] not in direct_names:
                 expanded.add(r["name"].lower())
@@ -299,13 +319,16 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
     # Convert to OR terms so "MyApp architecture" matches "MyApp" entity
     entity_fts_query = _query_to_entity_fts(query)
     try:
-        entities = db.execute("""
+        entities = db.execute(
+            """
             SELECT e.id, e.canonical_name, e.name, e.entity_type
             FROM entities_fts f
             JOIN entities e ON f.rowid = e.rowid
             WHERE entities_fts MATCH ?
             LIMIT 10
-        """, (entity_fts_query,)).fetchall()
+        """,
+            (entity_fts_query,),
+        ).fetchall()
     except Exception:
         logger.debug("Entity FTS failed for query: %s", query, exc_info=True)
         return []
@@ -327,7 +350,8 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
     if direct_entity_ids:
         placeholders = ",".join("?" * len(direct_entity_ids))
         try:
-            related_rows = db.execute(f"""
+            related_rows = db.execute(
+                f"""
                 SELECT DISTINCT
                     e.name
                 FROM relationships r
@@ -340,7 +364,9 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 WHERE (r.subject_id IN ({placeholders}) OR r.object_id IN ({placeholders}))
                 AND r.valid_to IS NULL
                 LIMIT 20
-            """, list(direct_entity_ids) * 3).fetchall()
+            """,
+                list(direct_entity_ids) * 3,
+            ).fetchall()
 
             for row in related_rows:
                 if row["name"] and row["name"] not in direct_entity_names:
@@ -371,14 +397,14 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
         # Build the direct entity part of the FTS query: "MyApp" OR "architecture" etc.
         direct_terms = []
         for name in direct_entity_names:
-            clean = re.sub(r'[^\w\s]', '', name).strip()
+            clean = re.sub(r"[^\w\s]", "", name).strip()
             if clean:
                 direct_terms.append(f'"{clean}"')
 
         direct_clause = " OR ".join(direct_terms) if direct_terms else None
 
         for name in sorted_expanded:
-            clean = re.sub(r'[^\w\s]', '', name).strip()
+            clean = re.sub(r"[^\w\s]", "", name).strip()
             if not clean or len(clean) < 2:
                 continue
 
@@ -393,7 +419,8 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
 
             try:
                 # Try contextual query first (e.g., "MyApp" AND "FastAPI")
-                rows = db.execute("""
+                rows = db.execute(
+                    """
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
                            m.surfacing_count, m.origin, m.origin_interface,
@@ -403,11 +430,14 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     WHERE memories_fts MATCH ?
                     AND m.superseded_by IS NULL
                     LIMIT 3
-                """, (fts_query_with_context,)).fetchall()
+                """,
+                    (fts_query_with_context,),
+                ).fetchall()
 
                 if not rows:
                     # Fall back to just the expanded entity name
-                    rows = db.execute("""
+                    rows = db.execute(
+                        """
                         SELECT m.id, m.content, m.category, m.subject, m.confidence,
                                m.created_at, m.metadata, m.importance, m.access_count,
                                m.surfacing_count, m.origin, m.origin_interface,
@@ -417,7 +447,9 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                         WHERE memories_fts MATCH ?
                         AND m.superseded_by IS NULL
                         LIMIT 3
-                    """, (fts_query,)).fetchall()
+                    """,
+                        (fts_query,),
+                    ).fetchall()
 
                 for row in rows:
                     r = dict(row)
@@ -427,7 +459,8 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
             except Exception:
                 # If contextual query fails (syntax), try plain entity search
                 try:
-                    rows = db.execute("""
+                    rows = db.execute(
+                        """
                         SELECT m.id, m.content, m.category, m.subject, m.confidence,
                                m.created_at, m.metadata, m.importance, m.access_count,
                                m.surfacing_count, m.origin, m.origin_interface,
@@ -437,7 +470,9 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                         WHERE memories_fts MATCH ?
                         AND m.superseded_by IS NULL
                         LIMIT 3
-                    """, (f'"{clean}"',)).fetchall()
+                    """,
+                        (f'"{clean}"',),
+                    ).fetchall()
                     for row in rows:
                         r = dict(row)
                         if r["id"] not in seen_fts_ids:
@@ -452,11 +487,12 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
     elif direct_entity_names:
         # No expansion — search for direct entity names only
         for name in direct_entity_names:
-            clean = re.sub(r'[^\w\s]', '', name).strip()
+            clean = re.sub(r"[^\w\s]", "", name).strip()
             if not clean:
                 continue
             try:
-                rows = db.execute("""
+                rows = db.execute(
+                    """
                     SELECT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
                            m.surfacing_count, m.origin, m.origin_interface,
@@ -466,7 +502,9 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     WHERE memories_fts MATCH ?
                     AND m.superseded_by IS NULL
                     LIMIT 5
-                """, (f'"{clean}"',)).fetchall()
+                """,
+                    (f'"{clean}"',),
+                ).fetchall()
                 for row in rows:
                     r = dict(row)
                     if r["id"] not in seen_fts_ids:
@@ -496,7 +534,8 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
             where_clause = " OR ".join(conditions)
             params.append(remaining)
             try:
-                subject_rows = db.execute(f"""
+                subject_rows = db.execute(
+                    f"""
                     SELECT DISTINCT m.id, m.content, m.category, m.subject, m.confidence,
                            m.created_at, m.metadata, m.importance, m.access_count,
                            m.surfacing_count, m.origin, m.origin_interface,
@@ -506,7 +545,9 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     AND ({where_clause})
                     ORDER BY m.importance DESC, m.created_at DESC
                     LIMIT ?
-                """, params).fetchall()
+                """,
+                    params,
+                ).fetchall()
 
                 for row in subject_rows:
                     row_dict = dict(row)
@@ -589,13 +630,15 @@ def find_similar_memories(
     RETRIEVAL_DEPTH = max(limit * 5, 25)
 
     import maasv
+
     protected = maasv.get_config().protected_categories
     now = datetime.now(timezone.utc)
 
     with _db() as db:
         # === Signal 1: Dense vector similarity ===
         query_embedding = get_query_embedding(query)
-        vector_rows = db.execute("""
+        vector_rows = db.execute(
+            """
             SELECT
                 v.id, m.content, m.category, m.subject, m.confidence,
                 m.created_at, m.metadata, m.importance, m.access_count,
@@ -607,7 +650,9 @@ def find_similar_memories(
             AND v.embedding MATCH ?
             AND k = ?
             ORDER BY distance
-        """, (serialize_embedding(query_embedding), RETRIEVAL_DEPTH)).fetchall()
+        """,
+            (serialize_embedding(query_embedding), RETRIEVAL_DEPTH),
+        ).fetchall()
         vector_results = [dict(row) for row in vector_rows]
 
         # === Signal 2: BM25 keyword matching ===
@@ -632,30 +677,30 @@ def find_similar_memories(
 
         # === Filter by category/subject/origin ===
         if category:
-            candidates = [c for c in candidates if c['category'] == category]
+            candidates = [c for c in candidates if c["category"] == category]
         if subject:
-            candidates = [c for c in candidates if c.get('subject') and subject.lower() in c['subject'].lower()]
+            candidates = [c for c in candidates if c.get("subject") and subject.lower() in c["subject"].lower()]
         if origin:
-            candidates = [c for c in candidates if c.get('origin') == origin]
+            candidates = [c for c in candidates if c.get("origin") == origin]
         if origin_interface:
-            candidates = [c for c in candidates if c.get('origin_interface') == origin_interface]
+            candidates = [c for c in candidates if c.get("origin_interface") == origin_interface]
 
         # === Reranking ===
         # Try cross-encoder first (best quality). Falls back to importance-weighted
         # formula if cross-encoder is unavailable.
         from maasv.core.reranker import rerank as ce_rerank
+
         ce_scores = ce_rerank(query, candidates)
 
-        vector_distances = {r['id']: r['distance'] for r in vector_results}
-        bm25_ids = {r['id'] for r in bm25_results}
-        graph_ids = {r['id'] for r in graph_results}
+        vector_distances = {r["id"]: r["distance"] for r in vector_results}
+        bm25_ids = {r["id"] for r in bm25_results}
+        graph_ids = {r["id"] for r in graph_results}
 
         # === Importance scoring ===
         # Try learned ranker first; falls back to heuristic formula.
         from maasv.core.learned_ranker import score as learned_score
-        lr_result = learned_score(
-            candidates, protected, now, vector_distances, bm25_ids, graph_ids
-        )
+
+        lr_result = learned_score(candidates, protected, now, vector_distances, bm25_ids, graph_ids)
         if lr_result is not None:
             primary, supplementary = lr_result
         else:
@@ -681,7 +726,7 @@ def find_similar_memories(
             # Map CE scores to this subset by memory ID
             ce_score_map = {}
             for mem, score in zip(candidates, ce_scores):
-                ce_score_map[mem['id']] = score
+                ce_score_map[mem["id"]] = score
 
             def _sigmoid(x):
                 if x >= 0:
@@ -690,33 +735,32 @@ def find_similar_memories(
                 return exp_x / (1.0 + exp_x)
 
             # Min-max normalize importance scores within the rerank window
-            imp_scores = [m['_imp_score'] for m in importance_ranked]
+            imp_scores = [m["_imp_score"] for m in importance_ranked]
             imp_min = min(imp_scores) if imp_scores else 0
             imp_max = max(imp_scores) if imp_scores else 1
             imp_range = imp_max - imp_min if imp_max > imp_min else 1.0
 
             for mem in importance_ranked:
-                ce_raw = ce_score_map.get(mem['id'], 0.0)
+                ce_raw = ce_score_map.get(mem["id"], 0.0)
                 ce_norm = _sigmoid(ce_raw)
-                imp_norm = (mem['_imp_score'] - imp_min) / imp_range
+                imp_norm = (mem["_imp_score"] - imp_min) / imp_range
 
                 # Importance-dominant blend: CE is a tiebreaker, not the decider.
                 # 0.75 importance + 0.25 CE ensures the existing 9/10 baseline
                 # is preserved while CE can swap close-ranked candidates.
-                mem['_score'] = 0.75 * imp_norm + 0.25 * ce_norm
+                mem["_score"] = 0.75 * imp_norm + 0.25 * ce_norm
 
-            importance_ranked.sort(key=lambda m: m['_score'], reverse=True)
+            importance_ranked.sort(key=lambda m: m["_score"], reverse=True)
 
             # Append any remaining candidates after the rerank window
-            reranked_ids = {m['id'] for m in importance_ranked}
-            remainder = [m for m in (primary + supplementary)[rerank_size:]
-                         if m['id'] not in reranked_ids]
+            reranked_ids = {m["id"] for m in importance_ranked}
+            remainder = [m for m in (primary + supplementary)[rerank_size:] if m["id"] not in reranked_ids]
             scored_pool = importance_ranked + remainder
         else:
             # === Fallback: importance-weighted reranking ===
             # Copy _imp_score to _score for downstream compatibility
             for mem in primary + supplementary:
-                mem['_score'] = mem['_imp_score']
+                mem["_score"] = mem["_imp_score"]
             scored_pool = primary + supplementary
 
         # === Diversity-aware selection (optional) ===
@@ -730,7 +774,7 @@ def find_similar_memories(
             for mem in scored_pool:
                 if len(result) >= limit:
                     break
-                mem_words = set(re.findall(r'\w+', mem.get('content', '').lower()))
+                mem_words = set(re.findall(r"\w+", mem.get("content", "").lower()))
                 is_diverse = True
                 for sw in selected_words:
                     if not mem_words or not sw:
@@ -753,21 +797,20 @@ def find_similar_memories(
         # the last slot. The graph signal always contributes through normal
         # RRF fusion regardless of this setting.
         if config.graph_slot_injection and graph_results and len(result) >= limit:
-            result_ids = {m['id'] for m in result}
-            result_content = " ".join(m.get('content', '').lower() for m in result)
-            graph_only = [m for m in graph_results if m['id'] not in result_ids]
+            result_ids = {m["id"] for m in result}
+            result_content = " ".join(m.get("content", "").lower() for m in result)
+            graph_only = [m for m in graph_results if m["id"] not in result_ids]
 
             if graph_only:
                 expanded_names = _get_graph_expanded_names(db, query)
                 if expanded_names:
-                    novel_names = {n for n in expanded_names
-                                   if n not in result_content}
+                    novel_names = {n for n in expanded_names if n not in result_content}
                     if novel_names:
                         query_terms = [t.lower() for t in query.split() if len(t) >= 3]
                         best_candidate = None
                         best_score = (0, 0)
                         for gm in graph_only:
-                            content_lower = gm.get('content', '').lower()
+                            content_lower = gm.get("content", "").lower()
                             query_count = sum(1 for t in query_terms if t in content_lower)
                             if query_terms and query_count == 0:
                                 continue
@@ -783,25 +826,26 @@ def find_similar_memories(
         for mem in result:
             # Expose relevance from L2 distance on normalized vectors.
             # For unit vectors: L2² = 2 - 2·cos(θ), so cos(θ) = 1 - L2²/2.
-            dist = mem.pop('distance', None)
+            dist = mem.pop("distance", None)
             if dist is not None:
                 cosine_sim = 1.0 - (dist * dist) / 2.0
-                mem['relevance'] = round(cosine_sim, 4)
-            mem.pop('_score', None)
-            mem.pop('_imp_score', None)
-            mem.pop('rrf_score', None)
-            mem.pop('bm25_score', None)
-            mem.pop('graph_score', None)
+                mem["relevance"] = round(cosine_sim, 4)
+            mem.pop("_score", None)
+            mem.pop("_imp_score", None)
+            mem.pop("rrf_score", None)
+            mem.pop("bm25_score", None)
+            mem.pop("graph_score", None)
 
-        _record_memory_access(db, [r['id'] for r in result])
+        _record_memory_access(db, [r["id"] for r in result])
 
         # Log retrieval for learned ranker training data (best-effort)
         try:
             from maasv.core.learned_ranker import log_retrieval
+
             log_retrieval(
                 query=query,
                 candidates=candidates,
-                returned_ids=[r['id'] for r in result],
+                returned_ids=[r["id"] for r in result],
                 vector_distances=vector_distances,
                 bm25_ids=bm25_ids,
                 graph_ids=graph_ids,
@@ -818,10 +862,13 @@ def find_similar_memories(
 # TIERED MEMORY CONTEXT
 # ============================================================================
 
+
 def _get_category_priority() -> dict[str, int]:
     """Get category priority from config."""
     import maasv
+
     return maasv.get_config().category_priority
+
 
 _core_memories_cache: list[dict] = []
 _cache_timestamp: float = 0
@@ -846,7 +893,7 @@ def get_core_memories(refresh: bool = False) -> list[dict]:
 
         with _db() as db:
             rows = db.execute("""
-                SELECT id, content, category, subject, confidence, created_at, importance
+                SELECT id, content, category, subject, confidence, created_at, importance, source
                 FROM memories
                 WHERE superseded_by IS NULL
                 AND category IN ('family', 'identity', 'preference')
@@ -867,10 +914,7 @@ def get_core_memories(refresh: bool = False) -> list[dict]:
 
 
 def get_tiered_memory_context(
-    query: str = None,
-    core_limit: int = 10,
-    relevant_limit: int = 5,
-    use_semantic: bool = False
+    query: str = None, core_limit: int = 10, relevant_limit: int = 5, use_semantic: bool = False
 ) -> str:
     """
     Smart memory retrieval with tiered approach for low latency.
@@ -885,21 +929,21 @@ def get_tiered_memory_context(
     # Tier 1: Always include core memories (cached)
     core = get_core_memories()[:core_limit]
     for mem in core:
-        if mem['id'] not in seen_ids:
+        if mem["id"] not in seen_ids:
             memories.append(mem)
-            seen_ids.add(mem['id'])
+            seen_ids.add(mem["id"])
 
     # Tier 2: Add query-relevant memories via FTS (fast)
     if query and len(memories) < core_limit + relevant_limit:
         try:
             tokens = [_sanitize_fts_input(w) for w in query.split()[:5]]
             tokens = [t for t in tokens if t]
-            keywords = ' OR '.join(tokens) if tokens else None
+            keywords = " OR ".join(tokens) if tokens else None
             fts_results = search_fts(keywords, limit=relevant_limit) if keywords else []
             for mem in fts_results:
-                if mem['id'] not in seen_ids:
+                if mem["id"] not in seen_ids:
                     memories.append(mem)
-                    seen_ids.add(mem['id'])
+                    seen_ids.add(mem["id"])
                     if len(memories) >= core_limit + relevant_limit:
                         break
         except Exception:
@@ -910,9 +954,9 @@ def get_tiered_memory_context(
         remaining = (core_limit + relevant_limit) - len(memories)
         semantic_results = find_similar_memories(query, limit=remaining)
         for mem in semantic_results:
-            if mem['id'] not in seen_ids:
+            if mem["id"] not in seen_ids:
                 memories.append(mem)
-                seen_ids.add(mem['id'])
+                seen_ids.add(mem["id"])
 
     # Fill remaining slots with other memories by priority.
     # Fetch a bounded set (not all 5K+) ordered by importance, then sort by category priority in Python.
@@ -923,30 +967,36 @@ def get_tiered_memory_context(
         fetch_limit = remaining_slots * 3
 
         with _db() as db:
-            filler_rows = db.execute("""
-                SELECT id, content, category, subject, confidence, created_at, importance
+            filler_rows = db.execute(
+                """
+                SELECT id, content, category, subject, confidence, created_at, importance, source
                 FROM memories
                 WHERE superseded_by IS NULL
                 ORDER BY importance DESC, created_at DESC
                 LIMIT ?
-            """, (fetch_limit,)).fetchall()
+            """,
+                (fetch_limit,),
+            ).fetchall()
 
-        filler_mems = [dict(row) for row in filler_rows if row['id'] not in seen_ids]
-        filler_mems.sort(key=lambda m: category_priority.get(m['category'], 99))
+        filler_mems = [dict(row) for row in filler_rows if row["id"] not in seen_ids]
+        filler_mems.sort(key=lambda m: category_priority.get(m["category"], 99))
 
         for mem in filler_mems:
             memories.append(mem)
-            seen_ids.add(mem['id'])
+            seen_ids.add(mem["id"])
             if len(memories) >= core_limit + relevant_limit:
                 break
 
     if not memories:
         return ""
 
-    lines = ["Remembered facts:"]
+    lines = ["<memory-context>"]
     for mem in memories:
-        subject_str = f"[{mem['subject']}] " if mem.get('subject') else ""
-        lines.append(f"- {subject_str}{mem['content']}")
+        source = mem.get("source", "unknown")
+        category = mem.get("category", "unknown")
+        subject_str = f"[{mem['subject']}] " if mem.get("subject") else ""
+        lines.append(f'<memory source="{source}" category="{category}">{subject_str}{mem["content"]}</memory>')
+    lines.append("</memory-context>")
 
     return "\n".join(lines)
 
@@ -954,6 +1004,7 @@ def get_tiered_memory_context(
 # ============================================================================
 # SIMPLE FTS SEARCH (used by tiered context and externally)
 # ============================================================================
+
 
 def search_fts(query: str, limit: int = 10, category: Optional[str] = None) -> list[dict]:
     """Full-text search across memories, optionally filtered by category."""
@@ -966,10 +1017,11 @@ def search_fts(query: str, limit: int = 10, category: Optional[str] = None) -> l
     with _db() as db:
         try:
             if category:
-                rows = db.execute("""
+                rows = db.execute(
+                    """
                     SELECT
                         m.id, m.content, m.category, m.subject,
-                        m.confidence, m.created_at
+                        m.confidence, m.created_at, m.source
                     FROM memories_fts f
                     JOIN memories m ON f.rowid = m.rowid
                     WHERE memories_fts MATCH ?
@@ -977,19 +1029,24 @@ def search_fts(query: str, limit: int = 10, category: Optional[str] = None) -> l
                     AND m.category = ?
                     ORDER BY rank
                     LIMIT ?
-                """, (query, category, limit)).fetchall()
+                """,
+                    (query, category, limit),
+                ).fetchall()
             else:
-                rows = db.execute("""
+                rows = db.execute(
+                    """
                     SELECT
                         m.id, m.content, m.category, m.subject,
-                        m.confidence, m.created_at
+                        m.confidence, m.created_at, m.source
                     FROM memories_fts f
                     JOIN memories m ON f.rowid = m.rowid
                     WHERE memories_fts MATCH ?
                     AND m.superseded_by IS NULL
                     ORDER BY rank
                     LIMIT ?
-                """, (query, limit)).fetchall()
+                """,
+                    (query, limit),
+                ).fetchall()
         except sqlite3.OperationalError:
             logger.debug("FTS5 query failed (bad syntax?): %s", query, exc_info=True)
             return []
