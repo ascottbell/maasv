@@ -29,6 +29,36 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 
+def _access_frequency_bonus(access_count: int, surfacing_count: int) -> float:
+    """
+    Compute an access frequency bonus for memories that have been
+    proven useful through repeated retrieval.
+
+    Uses log-scaled access count with a surfacing-rate correction:
+    - High access_count + low surfacing = very useful (high bonus)
+    - High access_count + high surfacing = commonly surfaced (moderate bonus)
+    - Low access_count = unproven (near-zero bonus)
+
+    Returns a value in [0, ~0.04] range — enough to break ties between
+    similarly-scored candidates but not enough to override vector similarity.
+    """
+    if access_count <= 0:
+        return 0.0
+
+    # Log-scaled access count, capped contribution
+    raw = math.log(1 + access_count)
+
+    # Surfacing rate correction: if surfaced 100 times but accessed 100 times,
+    # that's less impressive than surfaced 5 times and accessed 5 times.
+    if surfacing_count > 0:
+        conversion_rate = min(access_count / surfacing_count, 2.0)
+    else:
+        conversion_rate = min(access_count / 1.0, 2.0)
+
+    # Scale: 0.01 base * log(1+access) * conversion, cap at 0.04
+    return min(0.01 * raw * conversion_rate, 0.04)
+
+
 def _importance_score(
     candidates: list[dict],
     protected: set[str],
@@ -42,7 +72,8 @@ def _importance_score(
     (have vector distance) and supplementary (no vector distance) lists,
     both sorted by _imp_score descending.
 
-    Scoring: (1 - distance) + 0.05 * importance * decay * ips_utility + agreement_bonus
+    Scoring: (1 - distance) + 0.05 * importance * decay * ips_utility
+             + agreement_bonus + access_frequency_bonus
     """
     primary = []
     supplementary = []
@@ -72,6 +103,9 @@ def _importance_score(
         else:
             ips_utility = math.log(2 + min(access_count, 5))
 
+        # Access frequency bonus: direct signal from usage history
+        freq_bonus = _access_frequency_bonus(access_count, surfacing_count)
+
         distance = vector_distances.get(mem["id"])
 
         if distance is not None:
@@ -86,10 +120,10 @@ def _importance_score(
             if mem["id"] in graph_ids:
                 signal_count += 1
             agreement_bonus = (signal_count - 1) * 0.03
-            mem["_imp_score"] = vector_sim + tiebreaker + agreement_bonus
+            mem["_imp_score"] = vector_sim + tiebreaker + agreement_bonus + freq_bonus
             primary.append(mem)
         else:
-            mem["_imp_score"] = importance * decay_factor * ips_utility * 0.0001
+            mem["_imp_score"] = importance * decay_factor * ips_utility * 0.0001 + freq_bonus
             supplementary.append(mem)
 
     primary.sort(key=lambda m: m["_imp_score"], reverse=True)

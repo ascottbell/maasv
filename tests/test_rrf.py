@@ -1,6 +1,10 @@
-"""Tests for Reciprocal Rank Fusion and graph signal improvements."""
+"""Tests for Reciprocal Rank Fusion, graph signal, and access frequency improvements."""
 
-from maasv.core.retrieval import _reciprocal_rank_fusion, _query_to_entity_fts
+from maasv.core.retrieval import (
+    _reciprocal_rank_fusion,
+    _query_to_entity_fts,
+    _access_frequency_bonus,
+)
 
 
 def _make_items(ids: list[str]) -> list[dict]:
@@ -154,3 +158,38 @@ class TestEntityFTS:
         # 'a' and 'b' should not appear as terms
         assert "a" not in terms
         assert "b" not in terms
+
+
+class TestAccessFrequencyBonus:
+    def test_zero_access_returns_zero(self):
+        """No accesses = no bonus."""
+        assert _access_frequency_bonus(0, 0) == 0.0
+        assert _access_frequency_bonus(0, 10) == 0.0
+
+    def test_positive_access_returns_bonus(self):
+        """Positive access count produces a bonus."""
+        bonus = _access_frequency_bonus(5, 0)
+        assert bonus > 0.0
+
+    def test_more_access_higher_bonus(self):
+        """More accesses = higher bonus (up to cap)."""
+        low = _access_frequency_bonus(2, 0)
+        high = _access_frequency_bonus(20, 0)
+        assert high > low
+
+    def test_cap_at_004(self):
+        """Bonus is capped at 0.04."""
+        bonus = _access_frequency_bonus(10000, 1)
+        assert bonus <= 0.04
+
+    def test_high_conversion_rate_beats_low(self):
+        """High access/surfacing ratio produces higher bonus than low ratio."""
+        # 10 accesses, 5 surfacings = 2.0 conversion rate
+        high_conv = _access_frequency_bonus(10, 5)
+        # 10 accesses, 100 surfacings = 0.1 conversion rate
+        low_conv = _access_frequency_bonus(10, 100)
+        assert high_conv > low_conv
+
+    def test_negative_access_returns_zero(self):
+        """Negative access count treated as zero."""
+        assert _access_frequency_bonus(-5, 0) == 0.0
