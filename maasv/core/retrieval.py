@@ -731,9 +731,10 @@ def _compute_session_features(
 
     Returns a dict with per-query scalars (query_coherence, session_depth_norm)
     and per-candidate data (seen_categories, seen_subjects) for extract_features().
-    Returns None if no session_context provided.
+    Returns None if session_context is None (no tracking). An empty dict {}
+    means "new session, start tracking" and returns zeroed features.
     """
-    if not session_context:
+    if session_context is None:
         return None
 
     # Query coherence: cosine similarity with previous query embedding
@@ -1073,6 +1074,24 @@ def find_similar_memories(
             )
         except Exception:
             pass
+
+        # Update session_context in-place so the caller accumulates state
+        # across multiple retrievals. The same dict serves as both input
+        # (context for this call) and output (updated for the next call).
+        if session_context is not None:
+            session_context["retrieval_count"] = session_context.get("retrieval_count", 0) + 1
+            session_context["previous_query_embedding"] = query_embedding
+            if "seen_categories" not in session_context:
+                session_context["seen_categories"] = set()
+            if "seen_subjects" not in session_context:
+                session_context["seen_subjects"] = set()
+            for mem in result:
+                cat = mem.get("category")
+                if cat:
+                    session_context["seen_categories"].add(cat)
+                subj = mem.get("subject")
+                if subj:
+                    session_context["seen_subjects"].update(subj.lower().split())
 
     return result
 
