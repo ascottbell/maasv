@@ -348,13 +348,228 @@ class TestGraph:
         assert rel.startswith("rel_")
 
     def test_predicate_allowlist_rejects_unknown(self, maasv_db):
-        """Task 5: Unknown predicates are rejected."""
+        """Task 5: Unknown predicates are rejected when normalization is off."""
+        import maasv
         from maasv.core.graph import add_relationship, find_or_create_entity
 
         a = find_or_create_entity("PredicateTestC", "person")
         b = find_or_create_entity("PredicateTestD", "project")
-        with pytest.raises(ValueError, match="Unknown predicate"):
-            add_relationship(a, "totally_made_up", object_id=b)
+        # Disable normalization so the allowlist rejection is tested directly
+        original = maasv._config.predicate_normalization
+        try:
+            maasv._config.predicate_normalization = False
+            with pytest.raises(ValueError, match="Unknown predicate"):
+                add_relationship(a, "totally_made_up", object_id=b)
+        finally:
+            maasv._config.predicate_normalization = original
+
+    def test_predicate_normalization_close_match(self, maasv_db):
+        """Predicate normalization: a close-enough unknown predicate maps to the canonical one."""
+        import maasv
+        from maasv.core.graph import (
+            _predicate_embed_cache,
+            _predicate_embed_lock,
+            _validate_predicate,
+            VALID_PREDICATES,
+        )
+
+        # Create a controlled embed provider that makes "works_for" very similar to "works_at"
+        class ControlledEmbedProvider:
+            def embed(self, text):
+                # "works at" and "works for" get nearly identical vectors
+                # Everything else gets a very different vector
+                if text in ("works at", "works for"):
+                    return [1.0] * 32 + [0.0] * 32
+                # Default: orthogonal vector
+                return [0.0] * 32 + [1.0] * 32
+
+            def embed_query(self, text):
+                return self.embed(text)
+
+        original_embed = maasv._embed
+        original_normalization = maasv._config.predicate_normalization
+        try:
+            maasv._embed = ControlledEmbedProvider()
+            maasv._config.predicate_normalization = True
+
+            # Clear the predicate embedding cache so it recomputes with our provider
+            import maasv.core.graph as graph_mod
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
+
+            # "works_for" is not in VALID_PREDICATES but is semantically close to "works_at"
+            assert "works_for" not in VALID_PREDICATES
+            assert "works_at" in VALID_PREDICATES
+            result = _validate_predicate("works_for")
+            assert result == "works_at"
+        finally:
+            maasv._embed = original_embed
+            maasv._config.predicate_normalization = original_normalization
+            # Clear cache again so other tests aren't affected
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
+
+    def test_predicate_normalization_distant_rejects(self, maasv_db):
+        """Predicate normalization: a predicate too distant from all known ones still rejects."""
+        import maasv
+        from maasv.core.graph import _validate_predicate
+
+        # Create an embed provider where "zzz_nonsense" is orthogonal to everything
+        class OrthogonalEmbedProvider:
+            def embed(self, text):
+                if text == "zzz nonsense":
+                    return [0.0] * 63 + [1.0]
+                # All valid predicates get the same vector in a different direction
+                return [1.0] + [0.0] * 63
+
+            def embed_query(self, text):
+                return self.embed(text)
+
+        original_embed = maasv._embed
+        original_normalization = maasv._config.predicate_normalization
+        try:
+            maasv._embed = OrthogonalEmbedProvider()
+            maasv._config.predicate_normalization = True
+
+            import maasv.core.graph as graph_mod
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
+
+            with pytest.raises(ValueError, match="Unknown predicate"):
+                _validate_predicate("zzz_nonsense")
+        finally:
+            maasv._embed = original_embed
+            maasv._config.predicate_normalization = original_normalization
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
+
+    def test_predicate_normalization_disabled(self, maasv_db):
+        """When predicate_normalization is disabled, unknown predicates always reject."""
+        import maasv
+        from maasv.core.graph import _validate_predicate
+
+        original_normalization = maasv._config.predicate_normalization
+        try:
+            maasv._config.predicate_normalization = False
+            with pytest.raises(ValueError, match="Unknown predicate"):
+                _validate_predicate("works_for")
+        finally:
+            maasv._config.predicate_normalization = original_normalization
+
+    def test_predicate_normalization_no_embed_provider(self, maasv_db):
+        """When embed provider is unavailable, normalization is skipped and ValueError raised."""
+        import maasv
+        from maasv.core.graph import _validate_predicate
+
+        original_embed = maasv._embed
+        original_initialized = maasv._initialized
+        try:
+            maasv._embed = None
+            # get_embed() will raise RuntimeError when _embed is None
+            with pytest.raises(ValueError, match="Unknown predicate"):
+                _validate_predicate("works_for")
+        finally:
+            maasv._embed = original_embed
+            maasv._initialized = original_initialized
+
+    def test_predicate_normalization_cache_invalidation(self, maasv_db):
+        """Predicate embedding cache invalidates when allowlist changes."""
+        import maasv
+        import maasv.core.graph as graph_mod
+        from maasv.core.graph import _get_predicate_embeddings, VALID_PREDICATES
+
+        # Use a simple embed provider that tracks call count
+        class CountingEmbedProvider:
+            def __init__(self):
+                self.call_count = 0
+
+            def embed(self, text):
+                self.call_count += 1
+                return [1.0] * 64
+
+            def embed_query(self, text):
+                return self.embed(text)
+
+        original_embed = maasv._embed
+        original_extra = maasv._config.extra_predicates
+        try:
+            counter = CountingEmbedProvider()
+            maasv._embed = counter
+
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
+
+            allowed = VALID_PREDICATES | maasv.get_config().extra_predicates
+            embeddings1 = _get_predicate_embeddings(allowed)
+            count_after_first = counter.call_count
+            assert count_after_first == len(allowed)
+
+            # Second call with same allowlist — should use cache, no new embed calls
+            embeddings2 = _get_predicate_embeddings(allowed)
+            assert counter.call_count == count_after_first
+
+            # Change the allowlist — cache should invalidate
+            new_allowed = allowed | {"custom_new_pred"}
+            embeddings3 = _get_predicate_embeddings(new_allowed)
+            assert counter.call_count > count_after_first
+            assert "custom_new_pred" in embeddings3
+        finally:
+            maasv._embed = original_embed
+            maasv._config.extra_predicates = original_extra
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
+
+    def test_predicate_normalization_in_update_relationship(self, maasv_db):
+        """update_relationship_value also normalizes predicates."""
+        import maasv
+        from maasv.core.graph import (
+            add_relationship,
+            find_or_create_entity,
+            update_relationship_value,
+            VALID_PREDICATES,
+        )
+
+        class ControlledEmbedProvider:
+            def embed(self, text):
+                if text in ("lives in", "residing in"):
+                    return [1.0] * 32 + [0.0] * 32
+                return [0.0] * 32 + [1.0] * 32
+
+            def embed_query(self, text):
+                return self.embed(text)
+
+        original_embed = maasv._embed
+        original_normalization = maasv._config.predicate_normalization
+        try:
+            maasv._embed = ControlledEmbedProvider()
+            maasv._config.predicate_normalization = True
+
+            import maasv.core.graph as graph_mod
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
+
+            a = find_or_create_entity("NormUpdateTest", "person")
+            # First create a valid relationship
+            add_relationship(a, "lives_in", object_value="NYC")
+
+            # Update using a normalized predicate — "residing_in" should normalize to "lives_in"
+            assert "residing_in" not in VALID_PREDICATES
+            old_id, new_id = update_relationship_value(a, "residing_in", "Boston")
+            assert old_id is not None  # Found and expired the "lives_in" relationship
+            assert new_id.startswith("rel_")
+        finally:
+            maasv._embed = original_embed
+            maasv._config.predicate_normalization = original_normalization
+            with graph_mod._predicate_embed_lock:
+                graph_mod._predicate_embed_cache.clear()
+                graph_mod._predicate_embed_cache_key = None
 
     def test_object_value_length_cap(self, maasv_db):
         """Task 3: Object values are truncated to MAX_OBJECT_VALUE_LENGTH."""

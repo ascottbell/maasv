@@ -7,8 +7,10 @@ All graph memory operations live here.
 
 import json
 import logging
+import math
 import re
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -84,6 +86,142 @@ VALID_PREDICATES = {
     "interested_in",
     "collaborates_with",
 }
+
+
+# ============================================================================
+# PREDICATE NORMALIZATION
+# ============================================================================
+
+# Cache for pre-computed predicate embeddings. Invalidated when allowlist changes.
+_predicate_embed_cache: dict[str, list[float]] = {}
+_predicate_embed_cache_key: frozenset[str] | None = None
+_predicate_embed_lock = threading.Lock()
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _get_predicate_embeddings(allowed: set[str]) -> dict[str, list[float]]:
+    """Get cached embeddings for all valid predicates.
+
+    Recomputes if the allowlist has changed since last call.
+    Thread-safe via lock.
+    """
+    global _predicate_embed_cache, _predicate_embed_cache_key
+
+    cache_key = frozenset(allowed)
+
+    with _predicate_embed_lock:
+        if _predicate_embed_cache_key == cache_key and _predicate_embed_cache:
+            return _predicate_embed_cache
+
+    # Compute outside the lock (embedding can be slow)
+    import maasv
+
+    embed = maasv.get_embed()
+    new_cache = {}
+    for pred in allowed:
+        # Embed the predicate with underscores replaced by spaces for better semantic matching
+        text = pred.replace("_", " ")
+        new_cache[pred] = embed.embed(text)
+
+    with _predicate_embed_lock:
+        _predicate_embed_cache = new_cache
+        _predicate_embed_cache_key = cache_key
+
+    return new_cache
+
+
+def normalize_predicate(predicate: str, allowed: set[str]) -> str | None:
+    """Try to normalize an unknown predicate to a known one via embedding similarity.
+
+    Returns the canonical predicate if a close match is found, or None if nothing
+    is close enough. Requires the embed provider to be available and predicate
+    normalization to be enabled in config.
+
+    Args:
+        predicate: The unknown predicate to normalize
+        allowed: The full set of valid predicates (VALID_PREDICATES | extra_predicates)
+
+    Returns:
+        The canonical predicate name, or None if no match above threshold.
+    """
+    import maasv
+
+    config = maasv.get_config()
+
+    if not config.predicate_normalization:
+        return None
+
+    # Get embed provider — if unavailable, skip normalization
+    try:
+        embed = maasv.get_embed()
+    except RuntimeError:
+        return None
+
+    try:
+        pred_embeddings = _get_predicate_embeddings(allowed)
+    except Exception:
+        logger.debug("Failed to compute predicate embeddings, skipping normalization")
+        return None
+
+    # Embed the unknown predicate
+    try:
+        unknown_vec = embed.embed(predicate.replace("_", " "))
+    except Exception:
+        logger.debug(f"Failed to embed unknown predicate {predicate!r}, skipping normalization")
+        return None
+
+    # Find the closest match
+    best_pred = None
+    best_sim = -1.0
+    for canonical, canonical_vec in pred_embeddings.items():
+        sim = _cosine_similarity(unknown_vec, canonical_vec)
+        if sim > best_sim:
+            best_sim = sim
+            best_pred = canonical
+
+    if best_pred is not None and best_sim >= config.predicate_normalization_threshold:
+        logger.info(
+            f"Normalized predicate {predicate!r} -> {best_pred!r} "
+            f"(similarity={best_sim:.3f}, threshold={config.predicate_normalization_threshold})"
+        )
+        return best_pred
+
+    logger.debug(
+        f"No close predicate match for {predicate!r} "
+        f"(best={best_pred!r}, similarity={best_sim:.3f}, "
+        f"threshold={config.predicate_normalization_threshold})"
+    )
+    return None
+
+
+def _validate_predicate(predicate: str) -> str:
+    """Validate a predicate against the allowlist, with normalization fallback.
+
+    Returns the (possibly normalized) predicate. Raises ValueError if unknown
+    and normalization doesn't find a match.
+    """
+    import maasv
+
+    allowed = VALID_PREDICATES | maasv.get_config().extra_predicates
+
+    if predicate in allowed:
+        return predicate
+
+    # Try normalization
+    normalized = normalize_predicate(predicate, allowed)
+    if normalized is not None:
+        return normalized
+
+    raise ValueError(f"Unknown predicate: {predicate!r}")
 
 
 def _sanitize_entity_name(name: str) -> str:
@@ -508,12 +646,8 @@ def add_relationship(
     if object_id is None and object_value is None:
         raise ValueError("Must provide either object_id or object_value")
 
-    # Task 5: Predicate allowlist (extended by config.extra_predicates)
-    import maasv
-
-    allowed = VALID_PREDICATES | maasv.get_config().extra_predicates
-    if predicate not in allowed:
-        raise ValueError(f"Unknown predicate: {predicate!r}")
+    # Task 5: Predicate allowlist (extended by config.extra_predicates) + normalization fallback
+    predicate = _validate_predicate(predicate)
 
     # Task 4: Confidence clamping
     confidence = _clamp_confidence(confidence)
@@ -787,11 +921,7 @@ def update_relationship_value(
 
     Uses a single connection/transaction: find current -> expire old -> insert new.
     """
-    import maasv
-
-    allowed = VALID_PREDICATES | maasv.get_config().extra_predicates
-    if predicate not in allowed:
-        raise ValueError(f"Unknown predicate: {predicate!r}")
+    predicate = _validate_predicate(predicate)
 
     new_value = str(new_value)[:MAX_OBJECT_VALUE_LENGTH]
     now_iso = datetime.now(timezone.utc).isoformat()

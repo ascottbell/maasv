@@ -85,6 +85,11 @@ class MaasvConfig:
     # Extra predicates to extend VALID_PREDICATES (for host apps with existing data)
     extra_predicates: set[str] = field(default_factory=set)
 
+    # Predicate normalization — when an unknown predicate is close to a known one,
+    # silently map it to the canonical form instead of rejecting it.
+    predicate_normalization: bool = True
+    predicate_normalization_threshold: float = 0.7
+
     # Action type groupings for wisdom "similar enough" matching
     action_families: dict[str, list[str]] = field(default_factory=dict)
 
