@@ -50,16 +50,10 @@ def stats():
         """).fetchall()
 
         # Total counts
-        total_memories = db.execute(
-            "SELECT COUNT(*) FROM memories WHERE superseded_by IS NULL"
-        ).fetchone()[0]
+        total_memories = db.execute("SELECT COUNT(*) FROM memories WHERE superseded_by IS NULL").fetchone()[0]
         total_entities = db.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-        total_relationships = db.execute(
-            "SELECT COUNT(*) FROM relationships WHERE valid_to IS NULL"
-        ).fetchone()[0]
-        total_superseded = db.execute(
-            "SELECT COUNT(*) FROM memories WHERE superseded_by IS NOT NULL"
-        ).fetchone()[0]
+        total_relationships = db.execute("SELECT COUNT(*) FROM relationships WHERE valid_to IS NULL").fetchone()[0]
+        total_superseded = db.execute("SELECT COUNT(*) FROM memories WHERE superseded_by IS NOT NULL").fetchone()[0]
 
     # Retrieval latency probe (only if we have memories)
     latency_ms = None
@@ -72,6 +66,7 @@ def stats():
     wisdom_stats = None
     try:
         from maasv.core.wisdom import get_stats
+
         wisdom_stats = get_stats()
     except Exception:
         pass

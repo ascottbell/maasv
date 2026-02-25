@@ -88,6 +88,7 @@ def create_server(settings=None) -> FastMCP:
     """
     if settings is None:
         from maasv.mcp_server.config import MCPSettings
+
         settings = MCPSettings()
 
     # Initialize maasv
@@ -97,6 +98,7 @@ def create_server(settings=None) -> FastMCP:
     transport_security = None
     if settings.transport == "http":
         from mcp.server.fastmcp.server import TransportSecuritySettings
+
         transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=False,
             allowed_hosts=["*"],
@@ -145,7 +147,7 @@ def create_server(settings=None) -> FastMCP:
         global _session_client
         _session_client = client
 
-        from maasv.core import get_tiered_memory_context, get_all_active
+        from maasv.core import get_all_active, get_tiered_memory_context
 
         # Tier 1+2: core memories + FTS results for query
         context = get_tiered_memory_context(
@@ -173,6 +175,7 @@ def create_server(settings=None) -> FastMCP:
         # If query provided, add semantic results
         if query:
             from maasv.core import find_similar_memories
+
             relevant = find_similar_memories(query=query, limit=5)
             result["query_results"] = {
                 "query": query,
@@ -339,17 +342,16 @@ def create_server(settings=None) -> FastMCP:
             memories = get_all_active()
             target = next((m for m in memories if m["id"] == memory_id), None)
             if target:
-                affected.append({
-                    "id": target["id"],
-                    "content": target["content"],
-                    "category": target["category"],
-                })
+                affected.append(
+                    {
+                        "id": target["id"],
+                        "content": target["content"],
+                        "category": target["category"],
+                    }
+                )
         elif query:
             results = find_similar_memories(query, limit=5)
-            affected = [
-                {"id": r["id"], "content": r["content"], "category": r["category"]}
-                for r in results
-            ]
+            affected = [{"id": r["id"], "content": r["content"], "category": r["category"]} for r in results]
         else:
             return {"status": "error", "message": "Must provide either memory_id or query"}
 
@@ -526,7 +528,7 @@ def create_server(settings=None) -> FastMCP:
         Returns:
             Entity ID and whether it was newly created.
         """
-        from maasv.core import find_entity_by_name, create_entity
+        from maasv.core import create_entity, find_entity_by_name
 
         existing = find_entity_by_name(name, entity_type)
         if existing:
@@ -829,7 +831,8 @@ def create_server(settings=None) -> FastMCP:
         Returns:
             List of wisdom entries with reasoning, outcomes, and feedback scores.
         """
-        from maasv.core import search_wisdom as _search_wisdom, get_relevant_wisdom
+        from maasv.core import get_relevant_wisdom
+        from maasv.core import search_wisdom as _search_wisdom
 
         try:
             if action_type:
@@ -838,6 +841,7 @@ def create_server(settings=None) -> FastMCP:
                 results = _search_wisdom(query=query, limit=limit)
             else:
                 from maasv.core.wisdom import get_recent_wisdom
+
                 results = get_recent_wisdom(limit=limit)
 
             entries = []
@@ -918,6 +922,7 @@ def create_server(settings=None) -> FastMCP:
             return {"status": "error", "message": "Text is required"}
 
         import maasv
+
         try:
             llm = maasv.get_llm()
         except Exception:
@@ -963,6 +968,7 @@ def run() -> None:
             sys.exit(1)
 
         import hmac
+
         from starlette.middleware.base import BaseHTTPMiddleware
         from starlette.responses import JSONResponse
 
@@ -984,8 +990,8 @@ def run() -> None:
         logger.info("Host: %s:%d", settings.host, settings.port)
         logger.info("Auth: enabled (X-API-Key header)")
 
-        import uvicorn
         import anyio
+        import uvicorn
 
         config = uvicorn.Config(
             starlette_app,

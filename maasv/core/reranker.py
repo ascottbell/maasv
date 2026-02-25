@@ -48,12 +48,14 @@ def _get_reranker():
             return None
 
         import maasv
+
         config = maasv.get_config()
         if not config.cross_encoder_enabled:
             return None
 
         try:
             from sentence_transformers import CrossEncoder
+
             model_name = config.cross_encoder_model
             if model_name not in ALLOWED_CROSS_ENCODER_MODELS:
                 logger.error(
@@ -101,7 +103,7 @@ def rerank(
 
     try:
         scores = reranker.predict(pairs)
-        return scores.tolist() if hasattr(scores, 'tolist') else list(scores)
+        return scores.tolist() if hasattr(scores, "tolist") else list(scores)
     except Exception:
         logger.error("Cross-encoder prediction failed", exc_info=True)
         return None

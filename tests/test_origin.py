@@ -13,10 +13,10 @@ from unittest.mock import patch
 import pytest
 from starlette.testclient import TestClient
 
-
 # ============================================================================
 # MOCK PROVIDERS
 # ============================================================================
+
 
 class MockEmbedProvider:
     def __init__(self, dims=64):
@@ -27,7 +27,7 @@ class MockEmbedProvider:
         vec = [b / 255.0 for b in h]
         while len(vec) < self.dims:
             vec.extend(vec)
-        return vec[:self.dims]
+        return vec[: self.dims]
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed(text)
@@ -41,6 +41,7 @@ class MockLLMProvider:
 # ============================================================================
 # FIXTURES
 # ============================================================================
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -64,6 +65,7 @@ def client():
 
     with patch("maasv.server.main._init_maasv"):
         from maasv.server.main import app
+
         with TestClient(app) as tc:
             yield tc
 
@@ -72,6 +74,7 @@ def client():
 # STORE WITH ORIGIN
 # ============================================================================
 
+
 class TestStoreWithOrigin:
     _claude_code_id: str = ""
     _chatgpt_id: str = ""
@@ -79,38 +82,47 @@ class TestStoreWithOrigin:
 
     def test_store_with_origin(self, client):
         """Store memory with origin and origin_interface."""
-        r = client.post("/v1/memory/store", json={
-            "content": "Alex prefers dark mode in all editors",
-            "category": "preference",
-            "subject": "Alex",
-            "source": "conversation",
-            "origin": "claude",
-            "origin_interface": "claude-code",
-        })
+        r = client.post(
+            "/v1/memory/store",
+            json={
+                "content": "Alex prefers dark mode in all editors",
+                "category": "preference",
+                "subject": "Alex",
+                "source": "conversation",
+                "origin": "claude",
+                "origin_interface": "claude-code",
+            },
+        )
         assert r.status_code == 200
         TestStoreWithOrigin._claude_code_id = r.json()["memory_id"]
 
     def test_store_different_origin(self, client):
         """Store from a different origin."""
-        r = client.post("/v1/memory/store", json={
-            "content": "Alex uses vim keybindings in all editors",
-            "category": "preference",
-            "subject": "Alex",
-            "source": "conversation",
-            "origin": "openai",
-            "origin_interface": "chatgpt-ios",
-        })
+        r = client.post(
+            "/v1/memory/store",
+            json={
+                "content": "Alex uses vim keybindings in all editors",
+                "category": "preference",
+                "subject": "Alex",
+                "source": "conversation",
+                "origin": "openai",
+                "origin_interface": "chatgpt-ios",
+            },
+        )
         assert r.status_code == 200
         TestStoreWithOrigin._chatgpt_id = r.json()["memory_id"]
 
     def test_store_without_origin(self, client):
         """Store without origin (backward compat — should be null)."""
-        r = client.post("/v1/memory/store", json={
-            "content": "Alex lives in the Riverside district",
-            "category": "identity",
-            "subject": "Alex",
-            "source": "manual",
-        })
+        r = client.post(
+            "/v1/memory/store",
+            json={
+                "content": "Alex lives in the Riverside district",
+                "category": "identity",
+                "subject": "Alex",
+                "source": "manual",
+            },
+        )
         assert r.status_code == 200
         TestStoreWithOrigin._no_origin_id = r.json()["memory_id"]
 
@@ -135,14 +147,18 @@ class TestStoreWithOrigin:
 # SEARCH WITH ORIGIN FILTER
 # ============================================================================
 
+
 class TestSearchByOrigin:
     def test_search_filter_by_origin(self, client):
         """Search with origin filter returns only matching memories."""
-        r = client.post("/v1/memory/search", json={
-            "query": "Alex editor preferences",
-            "limit": 10,
-            "origin": "claude",
-        })
+        r = client.post(
+            "/v1/memory/search",
+            json={
+                "query": "Alex editor preferences",
+                "limit": 10,
+                "origin": "claude",
+            },
+        )
         assert r.status_code == 200
         results = r.json()["results"]
         for mem in results:
@@ -150,11 +166,14 @@ class TestSearchByOrigin:
 
     def test_search_filter_by_origin_interface(self, client):
         """Search with origin_interface filter."""
-        r = client.post("/v1/memory/search", json={
-            "query": "Alex editor preferences",
-            "limit": 10,
-            "origin_interface": "chatgpt-ios",
-        })
+        r = client.post(
+            "/v1/memory/search",
+            json={
+                "query": "Alex editor preferences",
+                "limit": 10,
+                "origin_interface": "chatgpt-ios",
+            },
+        )
         assert r.status_code == 200
         results = r.json()["results"]
         for mem in results:
@@ -162,10 +181,13 @@ class TestSearchByOrigin:
 
     def test_search_no_origin_filter_returns_all(self, client):
         """Search without origin filter returns from all origins."""
-        r = client.post("/v1/memory/search", json={
-            "query": "Alex",
-            "limit": 10,
-        })
+        r = client.post(
+            "/v1/memory/search",
+            json={
+                "query": "Alex",
+                "limit": 10,
+            },
+        )
         assert r.status_code == 200
         # Should have memories from multiple origins
         results = r.json()["results"]
@@ -178,25 +200,32 @@ class TestSearchByOrigin:
 # SUPERSEDE INHERITS ORIGIN
 # ============================================================================
 
+
 class TestSupersedeOrigin:
     def test_supersede_inherits_origin(self, client):
         """Superseding a memory inherits origin from the old one."""
         # Store with origin
-        r = client.post("/v1/memory/store", json={
-            "content": "Original fact from Claude Desktop",
-            "category": "context",
-            "source": "conversation",
-            "origin": "claude",
-            "origin_interface": "claude-desktop",
-        })
+        r = client.post(
+            "/v1/memory/store",
+            json={
+                "content": "Original fact from Claude Desktop",
+                "category": "context",
+                "source": "conversation",
+                "origin": "claude",
+                "origin_interface": "claude-desktop",
+            },
+        )
         assert r.status_code == 200
         old_id = r.json()["memory_id"]
 
         # Supersede without specifying origin
-        r = client.post("/v1/memory/supersede", json={
-            "old_id": old_id,
-            "new_content": "Updated fact that supersedes the old one",
-        })
+        r = client.post(
+            "/v1/memory/supersede",
+            json={
+                "old_id": old_id,
+                "new_content": "Updated fact that supersedes the old one",
+            },
+        )
         assert r.status_code == 200
         new_id = r.json()["memory_id"]
 
@@ -212,33 +241,43 @@ class TestSupersedeOrigin:
 # GRAPH RELATIONSHIPS WITH ORIGIN
 # ============================================================================
 
+
 class TestGraphOrigin:
     def test_relationship_with_origin(self, client):
         """Create relationship with origin fields."""
         # Create two entities
-        r1 = client.post("/v1/graph/entities", json={
-            "name": "OriginTestPerson",
-            "entity_type": "person",
-        })
+        r1 = client.post(
+            "/v1/graph/entities",
+            json={
+                "name": "OriginTestPerson",
+                "entity_type": "person",
+            },
+        )
         assert r1.status_code == 200
         person_id = r1.json()["id"]
 
-        r2 = client.post("/v1/graph/entities", json={
-            "name": "OriginTestProject",
-            "entity_type": "project",
-        })
+        r2 = client.post(
+            "/v1/graph/entities",
+            json={
+                "name": "OriginTestProject",
+                "entity_type": "project",
+            },
+        )
         assert r2.status_code == 200
         project_id = r2.json()["id"]
 
         # Create relationship with origin
-        r3 = client.post("/v1/graph/relationships", json={
-            "subject_id": person_id,
-            "predicate": "works_on",
-            "object_id": project_id,
-            "confidence": 0.9,
-            "source": "extracted",
-            "origin": "claude",
-            "origin_interface": "codex",
-        })
+        r3 = client.post(
+            "/v1/graph/relationships",
+            json={
+                "subject_id": person_id,
+                "predicate": "works_on",
+                "object_id": project_id,
+                "confidence": 0.9,
+                "source": "extracted",
+                "origin": "claude",
+                "origin_interface": "codex",
+            },
+        )
         assert r3.status_code == 200
         assert "relationship_id" in r3.json()

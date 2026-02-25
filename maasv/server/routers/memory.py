@@ -21,15 +21,22 @@ def _check_metadata_size(v: dict | None) -> dict | None:
 
 # --- Request/Response models ---
 
+
 class StoreRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=50000, description="The fact or memory to store")
-    category: str = Field(..., min_length=1, max_length=100, description="Memory category (e.g. family, preference, project)")
+    category: str = Field(
+        ..., min_length=1, max_length=100, description="Memory category (e.g. family, preference, project)"
+    )
     subject: Optional[str] = Field(None, max_length=200, description="Who/what this is about")
     source: str = Field("manual", max_length=100, description="Where this came from")
     confidence: float = Field(1.0, ge=0.0, le=1.0, description="Confidence score")
     metadata: Optional[dict] = Field(None, description="Additional structured data")
-    origin: Optional[str] = Field(None, max_length=100, description="What system created this (e.g. claude, chatgpt, salesforce)")
-    origin_interface: Optional[str] = Field(None, max_length=100, description="Specific client/interface (e.g. claude-code, claude-desktop, codex)")
+    origin: Optional[str] = Field(
+        None, max_length=100, description="What system created this (e.g. claude, chatgpt, salesforce)"
+    )
+    origin_interface: Optional[str] = Field(
+        None, max_length=100, description="Specific client/interface (e.g. claude-code, claude-desktop, codex)"
+    )
 
     _validate_metadata = field_validator("metadata")(_check_metadata_size)
 
@@ -63,6 +70,7 @@ class SupersedeRequest(BaseModel):
 # Routes use `def` (not `async def`) because they call synchronous maasv
 # functions. FastAPI runs `def` routes in a threadpool, keeping the event
 # loop free for other requests.
+
 
 @router.post("/store", response_model=StoreResponse)
 def store(req: StoreRequest):
@@ -118,9 +126,7 @@ def get_memory(memory_id: str):
     from maasv.core.db import _db
 
     with _db() as db:
-        row = db.execute(
-            "SELECT * FROM memories WHERE id = ?", (memory_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Memory {memory_id} not found")

@@ -16,6 +16,7 @@ MAX_TAGS = 20
 
 # --- Request models ---
 
+
 class LogReasoningRequest(BaseModel):
     action_type: str = Field(..., min_length=1, max_length=200)
     reasoning: str = Field(..., min_length=1, max_length=10000)
@@ -59,6 +60,7 @@ class SearchWisdomRequest(BaseModel):
 
 
 # --- Endpoints ---
+
 
 @router.post("/log")
 def log_reasoning(req: LogReasoningRequest):

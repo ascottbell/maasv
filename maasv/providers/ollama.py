@@ -35,6 +35,7 @@ class OllamaEmbed:
     def dims(self) -> int:
         if self._dims is None:
             import maasv
+
             self._dims = maasv.get_config().embed_dims
         return self._dims
 
@@ -64,6 +65,4 @@ class OllamaEmbed:
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a search query with retrieval instruction prefix."""
-        return self._truncate_and_normalize(
-            self._raw_embed(f"{self._query_instruction}{text}")
-        )
+        return self._truncate_and_normalize(self._raw_embed(f"{self._query_instruction}{text}"))

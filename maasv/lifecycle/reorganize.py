@@ -7,10 +7,10 @@ Optimizes the knowledge graph for faster retrieval:
 - Cleans up stale/orphaned data
 """
 
-import logging
 import json
-from typing import Callable
+import logging
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 logger = logging.getLogger("maasv.lifecycle.reorganize")
 
@@ -48,6 +48,7 @@ def _cache_common_paths() -> int:
     try:
         # Find the primary user entity — use config's known_entities if available
         import maasv
+
         config = maasv.get_config()
 
         # Look for the first "person" in known_entities
@@ -107,19 +108,24 @@ def _store_cached_path(path_name: str, relationships: list[dict]):
 
         simplified = []
         for r in relationships:
-            simplified.append({
-                "id": r.get("id"),
-                "predicate": r.get("predicate"),
-                "object_id": r.get("object_id"),
-                "object_name": r.get("object_name"),
-                "object_type": r.get("object_type"),
-                "object_value": r.get("object_value")
-            })
+            simplified.append(
+                {
+                    "id": r.get("id"),
+                    "predicate": r.get("predicate"),
+                    "object_id": r.get("object_id"),
+                    "object_name": r.get("object_name"),
+                    "object_type": r.get("object_type"),
+                    "object_value": r.get("object_value"),
+                }
+            )
 
-        db.execute("""
+        db.execute(
+            """
             INSERT OR REPLACE INTO cached_paths (name, data, cached_at, expires_at)
             VALUES (?, ?, ?, ?)
-        """, (path_name, json.dumps(simplified), now.isoformat(), expires.isoformat()))
+        """,
+            (path_name, json.dumps(simplified), now.isoformat(), expires.isoformat()),
+        )
 
         db.commit()
     except Exception as e:
@@ -140,14 +146,17 @@ def _cleanup_orphans() -> int:
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
 
-        cursor = db.execute("""
+        cursor = db.execute(
+            """
             DELETE FROM entities
             WHERE created_at < ?
             AND NOT EXISTS (
                 SELECT 1 FROM relationships r
                 WHERE r.subject_id = entities.id OR r.object_id = entities.id
             )
-        """, (cutoff,))
+        """,
+            (cutoff,),
+        )
         deleted = cursor.rowcount
         db.commit()
 

@@ -18,7 +18,7 @@ import math
 import threading
 
 from maasv.config import MaasvConfig
-from maasv.protocols import LLMProvider, EmbedProvider
+from maasv.protocols import EmbedProvider, LLMProvider
 
 __version__ = "0.2.0"
 
@@ -37,12 +37,12 @@ def _get_provider_class(name: str) -> type:
     """Lazy-load provider classes to avoid import cost when not used."""
     if not _PROVIDER_SHORTCUTS:
         from maasv.providers.ollama import OllamaEmbed
+
         _PROVIDER_SHORTCUTS["ollama"] = OllamaEmbed
     cls = _PROVIDER_SHORTCUTS.get(name)
     if cls is None:
         raise ValueError(
-            f"Unknown embed provider shortcut {name!r}. "
-            f"Available: {', '.join(sorted(_PROVIDER_SHORTCUTS))}"
+            f"Unknown embed provider shortcut {name!r}. Available: {', '.join(sorted(_PROVIDER_SHORTCUTS))}"
         )
     return cls
 
@@ -97,9 +97,11 @@ def init(
 
     # Initialize database schema (outside lock — these do their own DB locking)
     from maasv.core.db import init_db
+
     init_db()
 
     from maasv.core.wisdom import ensure_wisdom_tables
+
     ensure_wisdom_tables()
 
 
@@ -108,9 +110,7 @@ def _validate_embed(embed: EmbedProvider, config: MaasvConfig) -> None:
     try:
         vec = embed.embed("maasv validation")
     except Exception as exc:
-        raise RuntimeError(
-            f"Embedding provider failed validation call: {exc}"
-        ) from exc
+        raise RuntimeError(f"Embedding provider failed validation call: {exc}") from exc
 
     if len(vec) != config.embed_dims:
         raise ValueError(

@@ -5,8 +5,8 @@ Memory CRUD operations: store, supersede, get, delete, update metadata.
 Database infra lives in db.py, retrieval in retrieval.py, graph in graph.py.
 """
 
-import logging
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -57,12 +57,11 @@ def store_memory(
     if metadata is not None:
         meta_json = json.dumps(metadata)
         if len(meta_json) > MAX_METADATA_JSON_LENGTH:
-            raise ValueError(
-                f"Metadata JSON exceeds {MAX_METADATA_JSON_LENGTH} chars ({len(meta_json)})"
-            )
+            raise ValueError(f"Metadata JSON exceeds {MAX_METADATA_JSON_LENGTH} chars ({len(meta_json)})")
 
     # Task 4: Confidence clamping
     from maasv.core.graph import _clamp_confidence
+
     confidence = _clamp_confidence(confidence)
 
     # Compute embedding first (needed for both dedup check and storage)
@@ -81,39 +80,42 @@ def store_memory(
                 AND k = 3
                 ORDER BY distance
                 """,
-                (serialize_embedding(embedding),)
+                (serialize_embedding(embedding),),
             ).fetchall()
 
             for row in rows:
-                if row['distance'] < dedup_threshold and row['category'] == category:
+                if row["distance"] < dedup_threshold and row["category"] == category:
                     logger.info(
                         f"Dedup: skipping store, near-duplicate found: {row['id']} (dist={row['distance']:.4f})"
                     )
-                    return row['id']
+                    return row["id"]
         except Exception:
             logger.debug("Dedup check failed, proceeding with store", exc_info=True)
 
         # No duplicate found — insert
         memory_id = f"mem_{uuid.uuid4().hex[:12]}"
 
-        db.execute("""
-            INSERT INTO memories (id, content, category, subject, source, confidence, metadata, origin, origin_interface)
+        db.execute(
+            """
+            INSERT INTO memories
+            (id, content, category, subject, source, confidence, metadata, origin, origin_interface)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            memory_id,
-            content,
-            category,
-            subject,
-            source,
-            confidence,
-            json.dumps(metadata) if metadata else None,
-            origin,
-            origin_interface,
-        ))
+        """,
+            (
+                memory_id,
+                content,
+                category,
+                subject,
+                source,
+                confidence,
+                json.dumps(metadata) if metadata else None,
+                origin,
+                origin_interface,
+            ),
+        )
 
         db.execute(
-            "INSERT INTO memory_vectors (id, embedding) VALUES (?, ?)",
-            (memory_id, serialize_embedding(embedding))
+            "INSERT INTO memory_vectors (id, embedding) VALUES (?, ?)", (memory_id, serialize_embedding(embedding))
         )
 
         db.commit()
@@ -144,7 +146,7 @@ def supersede_memory(
         # 1. Read the old memory
         old = db.execute(
             "SELECT category, subject, metadata, confidence, origin, origin_interface FROM memories WHERE id = ?",
-            (old_id,)
+            (old_id,),
         ).fetchone()
 
         if not old:
@@ -152,23 +154,23 @@ def supersede_memory(
 
         if not force:
             import maasv
+
             protected = maasv.get_config().protected_categories
             if old["category"] in protected:
                 raise ValueError(
-                    f"Cannot supersede memory in protected category '{old['category']}'. "
-                    f"Use force=True to override."
+                    f"Cannot supersede memory in protected category '{old['category']}'. Use force=True to override."
                 )
 
         old = dict(old)
-        category = old['category']
-        subject = old['subject']
-        confidence = _clamp_confidence(old.get('confidence', 1.0))
-        metadata = json.loads(old['metadata']) if old['metadata'] else None
+        category = old["category"]
+        subject = old["subject"]
+        confidence = _clamp_confidence(old.get("confidence", 1.0))
+        metadata = json.loads(old["metadata"]) if old["metadata"] else None
         # Inherit origin from old memory if not explicitly provided
         if origin is None:
-            origin = old.get('origin')
+            origin = old.get("origin")
         if origin_interface is None:
-            origin_interface = old.get('origin_interface')
+            origin_interface = old.get("origin_interface")
 
         # 2. Dedup check against existing active memories
         new_id = None
@@ -183,12 +185,12 @@ def supersede_memory(
                 AND k = 3
                 ORDER BY distance
                 """,
-                (serialize_embedding(embedding),)
+                (serialize_embedding(embedding),),
             ).fetchall()
 
             for row in rows:
-                if row['distance'] < 0.05 and row['category'] == category:
-                    new_id = row['id']
+                if row["distance"] < 0.05 and row["category"] == category:
+                    new_id = row["id"]
                     break
         except Exception:
             logger.debug("Dedup check failed in supersede, proceeding with store", exc_info=True)
@@ -196,23 +198,32 @@ def supersede_memory(
         # 3. Insert new memory if no duplicate found
         if new_id is None:
             new_id = f"mem_{uuid.uuid4().hex[:12]}"
-            db.execute("""
-                INSERT INTO memories (id, content, category, subject, source, confidence, metadata, origin, origin_interface)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                new_id, new_content, category, subject, source, confidence,
-                json.dumps(metadata) if metadata else None,
-                origin, origin_interface,
-            ))
             db.execute(
-                "INSERT INTO memory_vectors (id, embedding) VALUES (?, ?)",
-                (new_id, serialize_embedding(embedding))
+                """
+                INSERT INTO memories
+                (id, content, category, subject, source, confidence,
+                 metadata, origin, origin_interface)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    new_id,
+                    new_content,
+                    category,
+                    subject,
+                    source,
+                    confidence,
+                    json.dumps(metadata) if metadata else None,
+                    origin,
+                    origin_interface,
+                ),
+            )
+            db.execute(
+                "INSERT INTO memory_vectors (id, embedding) VALUES (?, ?)", (new_id, serialize_embedding(embedding))
             )
 
         # 4. Mark old memory as superseded
         db.execute(
-            "UPDATE memories SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (new_id, old_id)
+            "UPDATE memories SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (new_id, old_id)
         )
         db.commit()
 
@@ -245,11 +256,7 @@ def get_all_active(category: Optional[str] = None, limit: Optional[int] = None) 
     return [dict(row) for row in rows]
 
 
-def get_recent_memories(
-    hours: int = 48,
-    categories: Optional[list[str]] = None,
-    limit: int = 50
-) -> list[dict]:
+def get_recent_memories(hours: int = 48, categories: Optional[list[str]] = None, limit: int = 50) -> list[dict]:
     """Get recent memories from the last N hours."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -277,16 +284,14 @@ def delete_memory(memory_id: str, force: bool = False) -> bool:
     """
     with _db() as db:
         if not force:
-            row = db.execute(
-                "SELECT category FROM memories WHERE id = ?", (memory_id,)
-            ).fetchone()
+            row = db.execute("SELECT category FROM memories WHERE id = ?", (memory_id,)).fetchone()
             if row:
                 import maasv
+
                 protected = maasv.get_config().protected_categories
                 if row["category"] in protected:
                     raise ValueError(
-                        f"Cannot delete memory in protected category '{row['category']}'. "
-                        f"Use force=True to override."
+                        f"Cannot delete memory in protected category '{row['category']}'. Use force=True to override."
                     )
 
         db.execute("DELETE FROM memory_vectors WHERE id = ?", (memory_id,))
@@ -300,20 +305,17 @@ def delete_memory(memory_id: str, force: bool = False) -> bool:
 def update_memory_metadata(memory_id: str, metadata_updates: dict) -> bool:
     """Update metadata for an existing memory (merge, not replace)."""
     with _db() as db:
-        row = db.execute(
-            "SELECT metadata FROM memories WHERE id = ?",
-            (memory_id,)
-        ).fetchone()
+        row = db.execute("SELECT metadata FROM memories WHERE id = ?", (memory_id,)).fetchone()
 
         if not row:
             return False
 
-        current = json.loads(row['metadata']) if row['metadata'] else {}
+        current = json.loads(row["metadata"]) if row["metadata"] else {}
         current.update(metadata_updates)
 
         db.execute(
             "UPDATE memories SET metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (json.dumps(current), memory_id)
+            (json.dumps(current), memory_id),
         )
         db.commit()
     return True

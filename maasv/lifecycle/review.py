@@ -6,9 +6,8 @@ Uses the injected LLMProvider — no direct API calls.
 """
 
 import logging
-import json
-from typing import Callable
 from datetime import datetime, timezone
+from typing import Callable
 
 logger = logging.getLogger("maasv.lifecycle.review")
 
@@ -122,6 +121,7 @@ JSON output:"""
         )
 
         from maasv.utils import parse_llm_json
+
         insights = parse_llm_json(text)
 
         if insights is None:
@@ -146,9 +146,8 @@ def _store_insights(insights: list[dict]) -> int:
     if not insights:
         return 0
 
-    from maasv.core.store import store_memory
-
     from maasv.core.graph import _clamp_confidence
+    from maasv.core.store import store_memory
 
     stored = 0
     for insight in insights:
@@ -165,7 +164,7 @@ def _store_insights(insights: list[dict]) -> int:
                 "pattern": "behavior",
                 "preference": "preference",
                 "connection": "relationship",
-                "follow_up": "reminder"
+                "follow_up": "reminder",
             }
             category = category_map.get(insight_type, "insight")
 
@@ -177,8 +176,8 @@ def _store_insights(insights: list[dict]) -> int:
                 metadata={
                     "evidence": evidence,
                     "insight_type": insight_type,
-                    "reviewed_at": datetime.now(timezone.utc).isoformat()
-                }
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                },
             )
 
             stored += 1

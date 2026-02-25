@@ -26,6 +26,14 @@ class MaasvConfig:
     inference_model: str = "claude-haiku-4-5-20251001"
     review_model: str = "claude-haiku-4-5-20251001"
 
+    # Per-operation LLM provider overrides (optional).
+    # When set, the operation uses this provider instead of the default LLM.
+    # This enables routing cheap operations (extraction) to a fast/cheap model
+    # while expensive operations (review) use a more capable model.
+    extraction_llm: object = None  # LLMProvider for entity extraction
+    inference_llm: object = None   # LLMProvider for sleep-time inference
+    review_llm: object = None      # LLMProvider for sleep-time review
+
     # Memory hygiene
     backup_dir: Optional[Path] = None
     max_hygiene_backups: int = 3
@@ -41,6 +49,9 @@ class MaasvConfig:
     # Retrieval tuning
     diversity_threshold: float = 0.0  # Jaccard threshold for dedup (0.0 = disabled, 0.7 = moderate)
     graph_slot_injection: bool = False  # Force-inject a graph result into last slot
+    rrf_k_vector: int = 60   # RRF k for vector signal (higher = less top-heavy)
+    rrf_k_bm25: int = 60     # RRF k for BM25 signal
+    rrf_k_graph: int = 60    # RRF k for graph signal
 
     # Cross-encoder reranking (opt-in: requires sentence-transformers + torch ~2GB)
     cross_encoder_enabled: bool = False
@@ -76,15 +87,17 @@ class MaasvConfig:
     action_families: dict[str, list[str]] = field(default_factory=dict)
 
     # Category priority for tiered memory context (lower = higher priority)
-    category_priority: dict[str, int] = field(default_factory=lambda: {
-        'identity': 1,
-        'family': 2,
-        'preference': 3,
-        'project': 4,
-        'decision': 5,
-        'person': 6,
-        'learning': 7,
-        'history': 8,
-        'home': 9,
-        'conversation': 10,
-    })
+    category_priority: dict[str, int] = field(
+        default_factory=lambda: {
+            "identity": 1,
+            "family": 2,
+            "preference": 3,
+            "project": 4,
+            "decision": 5,
+            "person": 6,
+            "learning": 7,
+            "history": 8,
+            "home": 9,
+            "conversation": 10,
+        }
+    )

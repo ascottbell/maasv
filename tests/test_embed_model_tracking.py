@@ -23,7 +23,7 @@ class MockEmbedProvider:
         vec = [b / 255.0 for b in h]
         while len(vec) < self.dims:
             vec.extend(vec)
-        return vec[:self.dims]
+        return vec[: self.dims]
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed(text)
@@ -65,6 +65,7 @@ class TestEmbedModelTracking:
 
         # Verify it's in the DB
         from maasv.core.db import get_db
+
         db = get_db()
         row = db.execute("SELECT value FROM db_meta WHERE key = 'embed_model'").fetchone()
         assert row is not None

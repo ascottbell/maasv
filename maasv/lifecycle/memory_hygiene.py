@@ -9,12 +9,12 @@ Runs during idle periods to:
 All operations are audited and can be run in dry-run mode.
 """
 
-import logging
 import json
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Optional
-from pathlib import Path
+import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable, Optional
 
 logger = logging.getLogger("maasv.lifecycle.memory_hygiene")
 
@@ -26,6 +26,7 @@ MAX_HYGIENE_MEMORIES = 10_000
 @dataclass
 class HygieneStats:
     """Statistics from a hygiene run."""
+
     duplicates_found: int = 0
     duplicates_merged: int = 0
     stale_found: int = 0
@@ -66,10 +67,7 @@ def run_memory_hygiene_job(data: dict, cancel_check: Callable[[], bool]) -> dict
     do_prune = data.get("prune", True)
     do_consolidate = data.get("consolidate", False)
 
-    stats = HygieneStats(
-        dry_run=dry_run,
-        started_at=datetime.now(timezone.utc).isoformat()
-    )
+    stats = HygieneStats(dry_run=dry_run, started_at=datetime.now(timezone.utc).isoformat())
 
     if cancel_check():
         return {"stats": _stats_to_dict(stats), "cancelled": True}
@@ -121,7 +119,11 @@ def run_memory_hygiene_job(data: dict, cancel_check: Callable[[], bool]) -> dict
             rel_dedup_stats = _deduplicate_relationships(dry_run)
             stats.rel_duplicates_found = rel_dedup_stats["found"]
             stats.rel_duplicates_removed = rel_dedup_stats["removed"]
-            logger.info(f"[MemoryHygiene] Rel dedup: found {stats.rel_duplicates_found} groups, removed {stats.rel_duplicates_removed}")
+            logger.info(
+                "[MemoryHygiene] Rel dedup: found %d groups, removed %d",
+                stats.rel_duplicates_found,
+                stats.rel_duplicates_removed,
+            )
         except Exception as e:
             logger.error(f"[MemoryHygiene] Relationship dedup failed: {e}", exc_info=True)
             stats.errors.append(f"Relationship dedup error: {e}")
@@ -136,7 +138,12 @@ def run_memory_hygiene_job(data: dict, cancel_check: Callable[[], bool]) -> dict
             ent_dedup_stats = _deduplicate_entities(dry_run)
             stats.entity_dupes_found = ent_dedup_stats["found"]
             stats.entity_dupes_merged = ent_dedup_stats["merged"]
-            logger.info(f"[MemoryHygiene] Entity dedup: found {stats.entity_dupes_found} dupes in {ent_dedup_stats['clusters']} clusters, merged {stats.entity_dupes_merged}")
+            logger.info(
+                "[MemoryHygiene] Entity dedup: found %d dupes in %d clusters, merged %d",
+                stats.entity_dupes_found,
+                ent_dedup_stats["clusters"],
+                stats.entity_dupes_merged,
+            )
         except Exception as e:
             logger.error(f"[MemoryHygiene] Entity dedup failed: {e}", exc_info=True)
             stats.errors.append(f"Entity dedup error: {e}")
@@ -151,7 +158,9 @@ def run_memory_hygiene_job(data: dict, cancel_check: Callable[[], bool]) -> dict
             consolidate_stats = _consolidate_clusters(dry_run, cancel_check)
             stats.clusters_found = consolidate_stats["found"]
             stats.clusters_consolidated = consolidate_stats["consolidated"]
-            logger.info(f"[MemoryHygiene] Consolidate: found {stats.clusters_found}, consolidated {stats.clusters_consolidated}")
+            logger.info(
+                f"[MemoryHygiene] Consolidate: found {stats.clusters_found}, consolidated {stats.clusters_consolidated}"
+            )
         except Exception as e:
             logger.error(f"[MemoryHygiene] Consolidate failed: {e}", exc_info=True)
             stats.errors.append(f"Consolidate error: {e}")
@@ -169,6 +178,7 @@ def _create_backup() -> Optional[Path]:
     concurrent writes (safe with WAL mode), instead of filesystem copy.
     """
     import sqlite3
+
     import maasv
 
     config = maasv.get_config()
@@ -217,11 +227,7 @@ def _create_backup() -> Optional[Path]:
 def _enforce_backup_retention(backup_dir: Path, max_backups: int):
     """Delete old hygiene backups, keeping only the most recent max_backups."""
     try:
-        backups = sorted(
-            backup_dir.glob("pre_hygiene_*.db"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True
-        )
+        backups = sorted(backup_dir.glob("pre_hygiene_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
 
         for old_backup in backups[max_backups:]:
             try:
@@ -294,14 +300,17 @@ def _deduplicate_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
 
     try:
         # Get active memories, capped to bound memory usage
-        memories = db.execute("""
+        memories = db.execute(
+            """
             SELECT id, content, category, subject, confidence, metadata,
                    created_at, importance, access_count
             FROM memories
             WHERE superseded_by IS NULL
             ORDER BY created_at DESC
             LIMIT ?
-        """, (MAX_HYGIENE_MEMORIES,)).fetchall()
+        """,
+            (MAX_HYGIENE_MEMORIES,),
+        ).fetchall()
 
         memories = [dict(m) for m in memories]
         mem_by_id = {m["id"]: m for m in memories}
@@ -317,16 +326,14 @@ def _deduplicate_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
             if _is_protected_from_dedup(mem):
                 continue
 
-            embedding_row = db.execute(
-                "SELECT embedding FROM memory_vectors WHERE id = ?",
-                (mem["id"],)
-            ).fetchone()
+            embedding_row = db.execute("SELECT embedding FROM memory_vectors WHERE id = ?", (mem["id"],)).fetchone()
 
             if not embedding_row:
                 continue
 
             # Search across ALL categories (no category filter)
-            similar = db.execute("""
+            similar = db.execute(
+                """
                 SELECT v.id, v.distance
                 FROM memory_vectors v
                 JOIN memories m ON v.id = m.id
@@ -335,14 +342,16 @@ def _deduplicate_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
                 AND v.embedding MATCH ?
                 AND k = 10
                 ORDER BY distance
-            """, (mem["id"], embedding_row["embedding"])).fetchall()
+            """,
+                (mem["id"], embedding_row["embedding"]),
+            ).fetchall()
 
             for row in similar:
                 if cancel_check():
                     break
 
                 distance = row["distance"]
-                similarity = 1 - (distance ** 2 / 2)
+                similarity = 1 - (distance**2 / 2)
 
                 if similarity > similarity_threshold:
                     other_id = row["id"]
@@ -401,11 +410,14 @@ def _deduplicate_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
                 continue
 
             # Keeper selection: longest content → highest importance → most recent
-            members.sort(key=lambda m: (
-                len(m.get("content") or ""),
-                m.get("importance") or 0.5,
-                m.get("created_at") or "",
-            ), reverse=True)
+            members.sort(
+                key=lambda m: (
+                    len(m.get("content") or ""),
+                    m.get("importance") or 0.5,
+                    m.get("created_at") or "",
+                ),
+                reverse=True,
+            )
 
             keeper = members[0]
             to_remove = [m for m in members[1:] if not _is_protected_from_dedup(m)]
@@ -437,11 +449,14 @@ def _deduplicate_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
             if not dry_run:
                 for removed in to_remove:
                     # Mark as superseded
-                    db.execute("""
+                    db.execute(
+                        """
                         UPDATE memories
                         SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
-                    """, (keeper["id"], removed["id"]))
+                    """,
+                        (keeper["id"], removed["id"]),
+                    )
 
                     # Merge metadata (guard against non-dict JSON values)
                     keep_meta = json.loads(keeper["metadata"]) if keeper.get("metadata") else {}
@@ -452,29 +467,32 @@ def _deduplicate_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
                         remove_meta = {}
                     if remove_meta:
                         merged_meta = {**remove_meta, **keep_meta}
-                        db.execute("""
+                        db.execute(
+                            """
                             UPDATE memories
                             SET metadata = ?, updated_at = CURRENT_TIMESTAMP
                             WHERE id = ?
-                        """, (json.dumps(merged_meta), keeper["id"]))
+                        """,
+                            (json.dumps(merged_meta), keeper["id"]),
+                        )
 
                     stats["merged"] += 1
 
                 # Transfer access count to keeper
                 if max_access > (keeper.get("access_count") or 0):
-                    db.execute("""
+                    db.execute(
+                        """
                         UPDATE memories
                         SET access_count = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
-                    """, (max_access, keeper["id"]))
+                    """,
+                        (max_access, keeper["id"]),
+                    )
 
         if not dry_run:
             db.commit()
 
-        logger.info(
-            f"[MemoryHygiene] Dedup complete: {len(stats['clusters'])} clusters, "
-            f"{stats['merged']} merged"
-        )
+        logger.info(f"[MemoryHygiene] Dedup complete: {len(stats['clusters'])} clusters, {stats['merged']} merged")
 
     finally:
         db.close()
@@ -504,13 +522,16 @@ def _prune_stale_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=config.stale_days)).strftime("%Y-%m-%d %H:%M:%S")
 
         # Find stale, low-confidence memories
-        candidates = db.execute("""
+        candidates = db.execute(
+            """
             SELECT id, content, category, subject, confidence, created_at
             FROM memories
             WHERE superseded_by IS NULL
             AND confidence < ?
             AND created_at < ?
-        """, (config.min_confidence_threshold, cutoff_date)).fetchall()
+        """,
+            (config.min_confidence_threshold, cutoff_date),
+        ).fetchall()
 
         candidates = [dict(c) for c in candidates]
         logger.info(f"[MemoryHygiene] Found {len(candidates)} prune candidates")
@@ -523,13 +544,15 @@ def _prune_stale_memories(dry_run: bool, cancel_check: Callable[[], bool]) -> di
                 continue
 
             stats["found"] += 1
-            stats["candidates"].append({
-                "id": mem["id"],
-                "content": mem["content"][:100],
-                "category": mem["category"],
-                "confidence": mem["confidence"],
-                "age_days": (datetime.now(timezone.utc) - datetime.fromisoformat(mem["created_at"])).days
-            })
+            stats["candidates"].append(
+                {
+                    "id": mem["id"],
+                    "content": mem["content"][:100],
+                    "category": mem["category"],
+                    "confidence": mem["confidence"],
+                    "age_days": (datetime.now(timezone.utc) - datetime.fromisoformat(mem["created_at"])).days,
+                }
+            )
 
             if not dry_run:
                 # Actually delete
@@ -571,12 +594,15 @@ def _deduplicate_relationships(dry_run: bool) -> dict:
         stats["found"] += len(groups)
 
         for g in groups:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT id, confidence FROM relationships
                 WHERE subject_id = ? AND predicate = ? AND object_id = ?
                 AND valid_to IS NULL
                 ORDER BY confidence DESC, created_at ASC
-            """, (g["subject_id"], g["predicate"], g["object_id"])).fetchall()
+            """,
+                (g["subject_id"], g["predicate"], g["object_id"]),
+            ).fetchall()
 
             if len(rows) < 2:
                 continue
@@ -599,12 +625,15 @@ def _deduplicate_relationships(dry_run: bool) -> dict:
         stats["found"] += len(val_groups)
 
         for g in val_groups:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT id, confidence FROM relationships
                 WHERE subject_id = ? AND predicate = ? AND object_value = ?
                 AND valid_to IS NULL AND object_id IS NULL
                 ORDER BY confidence DESC, created_at ASC
-            """, (g["subject_id"], g["predicate"], g["object_value"])).fetchall()
+            """,
+                (g["subject_id"], g["predicate"], g["object_value"]),
+            ).fetchall()
 
             if len(rows) < 2:
                 continue
@@ -647,10 +676,12 @@ def _deduplicate_entities(dry_run: bool) -> dict:
 
     try:
         # Load all entities
-        all_entities = [dict(r) for r in db.execute(
-            "SELECT id, name, entity_type, canonical_name, access_count, created_at "
-            "FROM entities"
-        ).fetchall()]
+        all_entities = [
+            dict(r)
+            for r in db.execute(
+                "SELECT id, name, entity_type, canonical_name, access_count, created_at FROM entities"
+            ).fetchall()
+        ]
 
         if len(all_entities) < 2:
             return stats
@@ -670,6 +701,7 @@ def _deduplicate_entities(dry_run: bool) -> dict:
 
         # Group by (entity_type, normalized_name) to find duplicates
         from collections import defaultdict
+
         groups = defaultdict(list)
         for ent in all_entities:
             norm = normalize_entity_name(ent["canonical_name"])
@@ -687,18 +719,20 @@ def _deduplicate_entities(dry_run: bool) -> dict:
             if dry_run:
                 names = [m["canonical_name"] for m in members]
                 logger.info(
-                    f"[MemoryHygiene] Entity dedup (dry): {etype}/{norm_name} "
-                    f"→ {len(members)} members: {names}"
+                    f"[MemoryHygiene] Entity dedup (dry): {etype}/{norm_name} → {len(members)} members: {names}"
                 )
                 continue
 
             # Keeper selection: most rels → shortest name → highest access → most recent
-            members.sort(key=lambda m: (
-                rel_counts.get(m["id"], 0),
-                -len(m.get("canonical_name") or ""),
-                m.get("access_count") or 0,
-                m.get("created_at") or "",
-            ), reverse=True)
+            members.sort(
+                key=lambda m: (
+                    rel_counts.get(m["id"], 0),
+                    -len(m.get("canonical_name") or ""),
+                    m.get("access_count") or 0,
+                    m.get("created_at") or "",
+                ),
+                reverse=True,
+            )
 
             keeper = members[0]
             dup_ids = [m["id"] for m in members[1:]]
@@ -713,8 +747,7 @@ def _deduplicate_entities(dry_run: bool) -> dict:
                 )
             except Exception as e:
                 logger.error(
-                    f"[MemoryHygiene] Entity dedup: failed merging into "
-                    f"{keeper['canonical_name']}: {e}", exc_info=True
+                    f"[MemoryHygiene] Entity dedup: failed merging into {keeper['canonical_name']}: {e}", exc_info=True
                 )
 
     finally:
@@ -733,6 +766,7 @@ def _consolidate_clusters(dry_run: bool, cancel_check: Callable[[], bool]) -> di
     - Similarity > cluster_similarity threshold
     """
     import struct
+
     import maasv
     from maasv.core.db import get_db
     from maasv.core.store import store_memory
@@ -744,7 +778,8 @@ def _consolidate_clusters(dry_run: bool, cancel_check: Callable[[], bool]) -> di
 
     try:
         # Get memories grouped by subject (only those with subjects), capped
-        memories = db.execute("""
+        memories = db.execute(
+            """
             SELECT id, content, category, subject, confidence, metadata, created_at
             FROM memories
             WHERE superseded_by IS NULL
@@ -752,20 +787,20 @@ def _consolidate_clusters(dry_run: bool, cancel_check: Callable[[], bool]) -> di
             AND subject != ''
             ORDER BY subject, created_at DESC
             LIMIT ?
-        """, (MAX_HYGIENE_MEMORIES,)).fetchall()
+        """,
+            (MAX_HYGIENE_MEMORIES,),
+        ).fetchall()
 
         memories = [dict(m) for m in memories]
 
         # Pre-load embeddings from DB instead of recomputing (O(n) reads vs O(n²) API calls)
         embedding_cache = {}
         for mem in memories:
-            row = db.execute(
-                "SELECT embedding FROM memory_vectors WHERE id = ?", (mem["id"],)
-            ).fetchone()
+            row = db.execute("SELECT embedding FROM memory_vectors WHERE id = ?", (mem["id"],)).fetchone()
             if row and row["embedding"]:
                 # Deserialize float32 binary blob
                 blob = row["embedding"]
-                embedding_cache[mem["id"]] = struct.unpack(f'{len(blob)//4}f', blob)
+                embedding_cache[mem["id"]] = struct.unpack(f"{len(blob) // 4}f", blob)
 
         # Group by subject
         by_subject = {}
@@ -834,12 +869,14 @@ def _consolidate_clusters(dry_run: bool, cancel_check: Callable[[], bool]) -> di
                 max_confidence = max(m.get("confidence", 1.0) for m in cluster)
                 category = cluster[0]["category"]
 
-                stats["clusters"].append({
-                    "subject": subject,
-                    "count": len(cluster),
-                    "ids": [m["id"] for m in cluster],
-                    "consolidated": consolidated_content[:200]
-                })
+                stats["clusters"].append(
+                    {
+                        "subject": subject,
+                        "count": len(cluster),
+                        "ids": [m["id"] for m in cluster],
+                        "consolidated": consolidated_content[:200],
+                    }
+                )
 
                 if not dry_run:
                     # Create new consolidated memory
@@ -849,17 +886,20 @@ def _consolidate_clusters(dry_run: bool, cancel_check: Callable[[], bool]) -> di
                         subject=subject.title(),
                         source="consolidation",
                         confidence=max_confidence,
-                        metadata={"consolidated_from": [m["id"] for m in cluster]}
+                        metadata={"consolidated_from": [m["id"] for m in cluster]},
                     )
 
                     # Mark old ones as superseded (unless protected)
                     for mem in cluster:
                         if not _is_protected(mem):
-                            db.execute("""
+                            db.execute(
+                                """
                                 UPDATE memories
                                 SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP
                                 WHERE id = ?
-                            """, (new_id, mem["id"]))
+                            """,
+                                (new_id, mem["id"]),
+                            )
 
                     stats["consolidated"] += 1
 
@@ -947,17 +987,13 @@ def _stats_to_dict(stats: HygieneStats) -> dict:
         "dry_run": stats.dry_run,
         "backup_path": stats.backup_path,
         "started_at": stats.started_at,
-        "completed_at": stats.completed_at
+        "completed_at": stats.completed_at,
     }
 
 
 # Convenience function for manual runs
 def run_hygiene(
-    mode: str = "incremental",
-    dry_run: bool = True,
-    dedup: bool = True,
-    prune: bool = True,
-    consolidate: bool = False
+    mode: str = "incremental", dry_run: bool = True, dedup: bool = True, prune: bool = True, consolidate: bool = False
 ) -> dict:
     """
     Run memory hygiene manually (not as a sleep job).
@@ -973,12 +1009,6 @@ def run_hygiene(
         Stats dict
     """
     return run_memory_hygiene_job(
-        data={
-            "mode": mode,
-            "dry_run": dry_run,
-            "dedup": dedup,
-            "prune": prune,
-            "consolidate": consolidate
-        },
-        cancel_check=lambda: False
+        data={"mode": mode, "dry_run": dry_run, "dedup": dedup, "prune": prune, "consolidate": consolidate},
+        cancel_check=lambda: False,
     )

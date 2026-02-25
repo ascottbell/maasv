@@ -11,7 +11,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Optional, Callable
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +26,14 @@ def _apply_pragmas(db: sqlite3.Connection):
 def _get_db_path():
     """Get the configured database path."""
     import maasv
+
     return maasv.get_config().db_path
 
 
 def _get_embed_dims():
     """Get the configured embedding dimensions."""
     import maasv
+
     return maasv.get_config().embed_dims
 
 
@@ -99,7 +101,9 @@ def _ensure_migration_table(db: sqlite3.Connection):
     db.commit()
 
 
-def run_migration(db: sqlite3.Connection, version: int, description: str, migrate_fn: Callable[[sqlite3.Connection], None]):
+def run_migration(
+    db: sqlite3.Connection, version: int, description: str, migrate_fn: Callable[[sqlite3.Connection], None]
+):
     """
     Run a schema migration if it hasn't been applied yet.
 
@@ -112,19 +116,14 @@ def run_migration(db: sqlite3.Connection, version: int, description: str, migrat
         description: Human-readable description of what this migration does
         migrate_fn: Callable that takes a db connection and performs the migration
     """
-    existing = db.execute(
-        "SELECT version FROM schema_migrations WHERE version = ?", (version,)
-    ).fetchone()
+    existing = db.execute("SELECT version FROM schema_migrations WHERE version = ?", (version,)).fetchone()
     if existing:
         return
 
     logger.info(f"Running migration {version}: {description}")
     try:
         migrate_fn(db)
-        db.execute(
-            "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
-            (version, description)
-        )
+        db.execute("INSERT INTO schema_migrations (version, description) VALUES (?, ?)", (version, description))
         db.commit()
         logger.info(f"Migration {version} applied successfully")
     except Exception:
@@ -141,30 +140,24 @@ def _verify_embed_model(db: sqlite3.Connection, model: str, dims: int):
     Raises on mismatch to prevent silent vector space corruption.
     """
     # Check if db_meta table exists (won't exist on very first init before migration 7)
-    table_exists = db.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='db_meta'"
-    ).fetchone()
+    table_exists = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='db_meta'").fetchone()
     if not table_exists:
         return  # Migration hasn't run yet, skip
 
-    existing_model = db.execute(
-        "SELECT value FROM db_meta WHERE key = 'embed_model'"
-    ).fetchone()
+    existing_model = db.execute("SELECT value FROM db_meta WHERE key = 'embed_model'").fetchone()
 
-    existing_dims = db.execute(
-        "SELECT value FROM db_meta WHERE key = 'embed_dims'"
-    ).fetchone()
+    existing_dims = db.execute("SELECT value FROM db_meta WHERE key = 'embed_dims'").fetchone()
 
     if existing_model is None:
         # First time — record the model
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         db.execute(
             "INSERT INTO db_meta (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            ("embed_model", model, now, now)
+            ("embed_model", model, now, now),
         )
         db.execute(
             "INSERT INTO db_meta (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            ("embed_dims", str(dims), now, now)
+            ("embed_dims", str(dims), now, now),
         )
         db.commit()
         logger.info("Recorded embedding model in db_meta: %s (%dd)", model, dims)
@@ -386,24 +379,21 @@ def init_db():
         """).fetchall()
 
         for g in dup_groups:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT id FROM entities
                 WHERE canonical_name = ? AND entity_type = ?
                 ORDER BY rowid ASC
-            """, (g["canonical_name"], g["entity_type"])).fetchall()
+            """,
+                (g["canonical_name"], g["entity_type"]),
+            ).fetchall()
 
             keeper_id = rows[0]["id"]
             dup_ids = [r["id"] for r in rows[1:]]
             if dup_ids:
                 ph = ",".join("?" * len(dup_ids))
-                db.execute(
-                    f"UPDATE relationships SET subject_id = ? WHERE subject_id IN ({ph})",
-                    [keeper_id] + dup_ids
-                )
-                db.execute(
-                    f"UPDATE relationships SET object_id = ? WHERE object_id IN ({ph})",
-                    [keeper_id] + dup_ids
-                )
+                db.execute(f"UPDATE relationships SET subject_id = ? WHERE subject_id IN ({ph})", [keeper_id] + dup_ids)
+                db.execute(f"UPDATE relationships SET object_id = ? WHERE object_id IN ({ph})", [keeper_id] + dup_ids)
                 db.execute(f"DELETE FROM entities WHERE id IN ({ph})", dup_ids)
                 logger.info(
                     f"Migration 4: merged {len(dup_ids)} duplicate entities for "
@@ -421,12 +411,15 @@ def init_db():
         """).fetchall()
 
         for g in rel_groups:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT id FROM relationships
                 WHERE subject_id = ? AND predicate = ? AND object_id = ?
                 AND valid_to IS NULL
                 ORDER BY confidence DESC, created_at ASC
-            """, (g["subject_id"], g["predicate"], g["object_id"])).fetchall()
+            """,
+                (g["subject_id"], g["predicate"], g["object_id"]),
+            ).fetchall()
             to_delete = [r["id"] for r in rows[1:]]
             if to_delete:
                 ph = ",".join("?" * len(to_delete))
@@ -442,12 +435,15 @@ def init_db():
         """).fetchall()
 
         for g in val_groups:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT id FROM relationships
                 WHERE subject_id = ? AND predicate = ? AND object_value = ?
                 AND valid_to IS NULL AND object_id IS NULL
                 ORDER BY confidence DESC, created_at ASC
-            """, (g["subject_id"], g["predicate"], g["object_value"])).fetchall()
+            """,
+                (g["subject_id"], g["predicate"], g["object_value"]),
+            ).fetchall()
             to_delete = [r["id"] for r in rows[1:]]
             if to_delete:
                 ph = ",".join("?" * len(to_delete))
@@ -469,7 +465,9 @@ def init_db():
             WHERE valid_to IS NULL AND object_value IS NOT NULL
         """)
 
-    run_migration(db, 4, "Dedup constraints — unique indexes on entities and active relationships", _migrate_dedup_constraints)
+    run_migration(
+        db, 4, "Dedup constraints — unique indexes on entities and active relationships", _migrate_dedup_constraints
+    )
 
     # --- Migration 5: Learned ranker tables ---
     def _migrate_learned_ranker(db):
@@ -631,6 +629,7 @@ def init_db():
 
     # Record / verify embedding model — must happen AFTER migration 7 creates the table
     import maasv
+
     config = maasv.get_config()
     _verify_embed_model(db, config.embed_model, config.embed_dims)
 
@@ -639,6 +638,7 @@ def init_db():
     # Set restrictive file permissions on the database (owner read/write only).
     # SQLite stores data in plaintext — file permissions are the first line of defense.
     import os
+
     db_path = _get_db_path()
     try:
         os.chmod(db_path, 0o600)
@@ -655,27 +655,32 @@ def init_db():
 # EMBEDDING HELPERS
 # ============================================================================
 
+
 def get_embedding(text: str) -> list[float]:
     """Get embedding vector for a document/memory via the configured EmbedProvider."""
     import maasv
+
     return maasv.get_embed().embed(text)
 
 
 def get_query_embedding(text: str) -> list[float]:
     """Get embedding vector for a search query (may use instruction prefix)."""
     import maasv
+
     return maasv.get_embed().embed_query(text)
 
 
 def serialize_embedding(embedding: list[float]) -> bytes:
     """Convert embedding to binary format for sqlite-vec."""
     from sqlite_vec import serialize_float32
+
     return serialize_float32(embedding)
 
 
 # ============================================================================
 # ACCESS TRACKING
 # ============================================================================
+
 
 def _record_memory_access(db: sqlite3.Connection, memory_ids: list[str]):
     """Increment access_count and set last_accessed_at for retrieved memories."""
@@ -685,9 +690,8 @@ def _record_memory_access(db: sqlite3.Connection, memory_ids: list[str]):
     placeholders = ",".join("?" * len(memory_ids))
     try:
         db.execute(
-            f"UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? "
-            f"WHERE id IN ({placeholders})",
-            [now] + memory_ids
+            f"UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id IN ({placeholders})",
+            [now] + memory_ids,
         )
         db.commit()
     except Exception:
@@ -706,8 +710,7 @@ def _record_surfacing(db: sqlite3.Connection, memory_ids: list[str]):
     placeholders = ",".join("?" * len(memory_ids))
     try:
         db.execute(
-            f"UPDATE memories SET surfacing_count = surfacing_count + 1 "
-            f"WHERE id IN ({placeholders})",
+            f"UPDATE memories SET surfacing_count = surfacing_count + 1 WHERE id IN ({placeholders})",
             memory_ids,
         )
     except Exception:
@@ -722,9 +725,8 @@ def _record_entity_access(db: sqlite3.Connection, entity_ids: list[str]):
     placeholders = ",".join("?" * len(entity_ids))
     try:
         db.execute(
-            f"UPDATE entities SET access_count = access_count + 1, last_accessed_at = ? "
-            f"WHERE id IN ({placeholders})",
-            [now] + entity_ids
+            f"UPDATE entities SET access_count = access_count + 1, last_accessed_at = ? WHERE id IN ({placeholders})",
+            [now] + entity_ids,
         )
         db.commit()
     except Exception:
@@ -736,8 +738,8 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-_FTS5_SPECIAL_RE = re.compile(r'[\"*()^]')
-_FTS5_OPERATOR_RE = re.compile(r'\b(NEAR|NOT)\b', re.IGNORECASE)
+_FTS5_SPECIAL_RE = re.compile(r"[\"*()^]")
+_FTS5_OPERATOR_RE = re.compile(r"\b(NEAR|NOT)\b", re.IGNORECASE)
 
 
 def _sanitize_fts_input(text: str) -> str:
@@ -747,6 +749,6 @@ def _sanitize_fts_input(text: str) -> str:
     that can produce unexpected results (NEAR, NOT). Preserves OR/AND since
     they are harmless (just modify query semantics) and used by callers.
     """
-    text = _FTS5_SPECIAL_RE.sub(' ', text)
-    text = _FTS5_OPERATOR_RE.sub(' ', text)
-    return ' '.join(text.split())
+    text = _FTS5_SPECIAL_RE.sub(" ", text)
+    text = _FTS5_OPERATOR_RE.sub(" ", text)
+    return " ".join(text.split())

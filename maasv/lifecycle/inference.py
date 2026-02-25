@@ -6,9 +6,8 @@ Uses the injected LLMProvider — no direct API calls.
 """
 
 import logging
-import json
-from typing import Callable
 from datetime import datetime, timezone
+from typing import Callable
 
 logger = logging.getLogger("maasv.lifecycle.inference")
 
@@ -110,6 +109,7 @@ JSON output:"""
         )
 
         from maasv.utils import parse_llm_json
+
         inferences = parse_llm_json(text)
 
         if inferences is None:
@@ -139,7 +139,7 @@ def _store_inferences(inferences: list[dict]) -> int:
     if not inferences:
         return 0
 
-    from maasv.core.graph import find_entity_by_name, find_or_create_entity, add_relationship, _clamp_confidence
+    from maasv.core.graph import _clamp_confidence, add_relationship, find_entity_by_name, find_or_create_entity
 
     stored = 0
     for inf in inferences:
@@ -168,7 +168,7 @@ def _store_inferences(inferences: list[dict]) -> int:
                 entity_id = find_or_create_entity(
                     name=resolved_name,
                     entity_type=entity_type,
-                    metadata={"source": "inferred", "confidence": confidence}
+                    metadata={"source": "inferred", "confidence": confidence},
                 )
             else:
                 entity_id = entity["id"]
@@ -185,7 +185,7 @@ def _store_inferences(inferences: list[dict]) -> int:
                     "evidence": evidence,
                     "inferred_at": datetime.now(timezone.utc).isoformat(),
                     "is_vague_reference": True,
-                }
+                },
             )
 
             stored += 1

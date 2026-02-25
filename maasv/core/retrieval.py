@@ -560,21 +560,38 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
     return fts_results
 
 
-def _reciprocal_rank_fusion(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
+def _reciprocal_rank_fusion(
+    ranked_lists: list[list[dict]],
+    k: int = 60,
+    k_per_list: list[int] | None = None,
+) -> list[dict]:
     """
     Merge multiple ranked lists using Reciprocal Rank Fusion.
 
     Each list is a sequence of dicts with at least an 'id' key.
-    RRF score for each item = sum over lists of 1/(k + rank + 1).
+    RRF score for each item = sum over lists of 1/(k_i + rank + 1).
+
+    Args:
+        ranked_lists: Lists of ranked candidate dicts.
+        k: Default k value used when k_per_list is None or for lists
+            without a corresponding entry.
+        k_per_list: Per-list k values, aligned by index with ranked_lists.
+            Allows tuning how top-heavy each signal's contribution is.
+            Higher k = flatter distribution (less top-heavy).
+
     Returns fused list sorted by combined RRF score descending.
     """
     scores: dict[str, float] = {}
     items: dict[str, dict] = {}
 
-    for ranked_list in ranked_lists:
+    for list_idx, ranked_list in enumerate(ranked_lists):
+        if k_per_list is not None and list_idx < len(k_per_list):
+            k_i = k_per_list[list_idx]
+        else:
+            k_i = k
         for rank, item in enumerate(ranked_list):
             item_id = item["id"]
-            rrf_score = 1.0 / (k + rank + 1)
+            rrf_score = 1.0 / (k_i + rank + 1)
             scores[item_id] = scores.get(item_id, 0.0) + rrf_score
             if item_id not in items:
                 items[item_id] = item
@@ -662,18 +679,25 @@ def find_similar_memories(
         graph_results = _find_memories_by_graph(db, query, limit=RETRIEVAL_DEPTH)
 
         # === Fusion: Reciprocal Rank Fusion ===
-        signals = [vector_results, bm25_results, graph_results]
-        # Only include non-empty signals
-        active_signals = [s for s in signals if s]
+        config = maasv.get_config()
+        signals_with_k = [
+            (vector_results, config.rrf_k_vector),
+            (bm25_results, config.rrf_k_bm25),
+            (graph_results, config.rrf_k_graph),
+        ]
+        # Only include non-empty signals, keeping k values aligned
+        active_pairs = [(s, k) for s, k in signals_with_k if s]
 
-        if not active_signals:
+        if not active_pairs:
             return []
 
-        if len(active_signals) == 1:
+        if len(active_pairs) == 1:
             # Single signal — skip RRF overhead
-            candidates = active_signals[0]
+            candidates = active_pairs[0][0]
         else:
-            candidates = _reciprocal_rank_fusion(active_signals, k=60)
+            active_signals = [s for s, _ in active_pairs]
+            active_k = [k for _, k in active_pairs]
+            candidates = _reciprocal_rank_fusion(active_signals, k_per_list=active_k)
 
         # === Filter by category/subject/origin ===
         if category:
@@ -766,7 +790,6 @@ def find_similar_memories(
         # === Diversity-aware selection (optional) ===
         # When diversity_threshold > 0, greedily select from scored candidates,
         # skipping those too similar (by Jaccard) to already-selected results.
-        config = maasv.get_config()
         if config.diversity_threshold > 0:
             result = []
             selected_words = []

@@ -41,6 +41,7 @@ N_FEATURES = len(FEATURE_NAMES)
 # MODEL
 # ============================================================================
 
+
 class RankingModel:
     """Linear(8,8) -> ReLU -> Linear(8,1) -> Sigmoid = 81 parameters."""
 
@@ -127,12 +128,14 @@ def _get_model() -> Optional[RankingModel]:
 
         try:
             import maasv
+
             config = maasv.get_config()
             if not config.learned_ranker_enabled:
                 _model_loaded = True
                 return None
 
             from maasv.core.db import _db
+
             with _db() as db:
                 row = db.execute(
                     "SELECT weights_json, feature_names, training_samples FROM learned_ranker_weights WHERE id = 1"
@@ -151,7 +154,8 @@ def _get_model() -> Optional[RankingModel]:
             if stored_features != FEATURE_NAMES:
                 logger.info(
                     "[LearnedRanker] Feature schema changed (%s -> %s), discarding stored weights",
-                    stored_features, FEATURE_NAMES,
+                    stored_features,
+                    FEATURE_NAMES,
                 )
                 _model_loaded = True
                 return None
@@ -188,10 +192,12 @@ def reload_model():
 # FEATURE EXTRACTION
 # ============================================================================
 
+
 def _get_category_priority() -> dict[str, int]:
     """Get category priority map from config."""
     try:
         import maasv
+
         return maasv.get_config().category_priority
     except RuntimeError:
         return {}
@@ -274,6 +280,7 @@ def extract_features(
 # SCORING
 # ============================================================================
 
+
 def score(
     candidates: list[dict],
     protected: set[str],
@@ -289,6 +296,7 @@ def score(
     or None if the learned ranker is unavailable or in shadow mode.
     """
     import maasv
+
     config = maasv.get_config()
 
     if not config.learned_ranker_enabled:
@@ -299,8 +307,7 @@ def score(
     if config.learned_ranker_shadow_mode:
         # Shadow mode: score but don't use results
         if model is not None:
-            shadow_compare(model, candidates, protected, now,
-                           vector_distances, bm25_ids, graph_ids)
+            shadow_compare(model, candidates, protected, now, vector_distances, bm25_ids, graph_ids)
         return None
 
     if model is None:
@@ -310,9 +317,7 @@ def score(
     supplementary = []
 
     for rank, mem in enumerate(candidates):
-        features = extract_features(
-            mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank
-        )
+        features = extract_features(mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank)
         x = [Value(f) for f in features]
         score_val = model.forward(x)
         mem["_imp_score"] = score_val.data
@@ -332,6 +337,7 @@ def score(
 # SHADOW COMPARISON
 # ============================================================================
 
+
 def shadow_compare(
     model: RankingModel,
     candidates: list[dict],
@@ -349,9 +355,7 @@ def shadow_compare(
         # Get learned ranker ordering
         learned_scores = {}
         for rank, mem in enumerate(candidates):
-            features = extract_features(
-                mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank
-            )
+            features = extract_features(mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank)
             x = [Value(f) for f in features]
             learned_scores[mem["id"]] = model.forward(x).data
 
@@ -382,14 +386,8 @@ def shadow_compare(
         tau = (concordant - discordant) / total if total > 0 else 1.0
 
         # Compute average surfacing count for propensity distribution monitoring
-        surfacing_values = [
-            m.get("surfacing_count") or 0 for m in candidates
-            if m.get("surfacing_count") is not None
-        ]
-        avg_surfacing = (
-            sum(surfacing_values) / len(surfacing_values)
-            if surfacing_values else 0.0
-        )
+        surfacing_values = [m.get("surfacing_count") or 0 for m in candidates if m.get("surfacing_count") is not None]
+        avg_surfacing = sum(surfacing_values) / len(surfacing_values) if surfacing_values else 0.0
 
         logger.info(
             f"[LearnedRanker] Shadow: top5_overlap={overlap}/5, "
@@ -399,6 +397,7 @@ def shadow_compare(
         # Persist metrics for graduation readiness analysis
         try:
             from maasv.core.db import _db
+
             with _db() as db:
                 db.execute(
                     """INSERT INTO shadow_metrics
@@ -419,6 +418,7 @@ def shadow_compare(
 # RETRIEVAL LOGGING
 # ============================================================================
 
+
 def log_retrieval(
     query: str,
     candidates: list[dict],
@@ -436,9 +436,7 @@ def log_retrieval(
         # Compute features for all candidates
         features = {}
         for rank, mem in enumerate(candidates):
-            feat = extract_features(
-                mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank
-            )
+            feat = extract_features(mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank)
             features[mem["id"]] = feat
 
         # Hash the query for grouping
@@ -474,6 +472,7 @@ def log_retrieval(
 # ============================================================================
 # OUTCOME LABELING
 # ============================================================================
+
 
 def label_outcomes(
     cancel_check: Callable[[], bool],
@@ -554,6 +553,7 @@ def label_outcomes(
 # TRAINING
 # ============================================================================
 
+
 def train(
     cancel_check: Callable[[], bool],
     max_steps: int = 50,
@@ -565,9 +565,9 @@ def train(
     Uses binary cross-entropy loss with outcome weights.
     Returns training stats dict or None if insufficient data.
     """
+    import maasv
     from maasv.core.db import _db
 
-    import maasv
     config = maasv.get_config()
 
     with _db() as db:
@@ -580,9 +580,7 @@ def train(
         ).fetchall()
 
     if len(rows) < config.learned_ranker_min_samples:
-        logger.info(
-            f"[LearnedRanker] Only {len(rows)} labeled samples, need {config.learned_ranker_min_samples}"
-        )
+        logger.info(f"[LearnedRanker] Only {len(rows)} labeled samples, need {config.learned_ranker_min_samples}")
         return None
 
     # Collect all memory IDs from training data for surfacing count lookup
@@ -640,9 +638,7 @@ def train(
     model = RankingModel()
 
     with _db() as db:
-        existing = db.execute(
-            "SELECT weights_json FROM learned_ranker_weights WHERE id = 1"
-        ).fetchone()
+        existing = db.execute("SELECT weights_json FROM learned_ranker_weights WHERE id = 1").fetchone()
     if existing:
         try:
             model.load_state_dict(json.loads(existing["weights_json"]))
@@ -734,7 +730,8 @@ def train(
     logger.info(
         f"[LearnedRanker] Trained: {len(samples)} samples, {len(losses)} steps, "
         f"loss={losses[-1]:.4f}, ndcg@5={ndcg:.3f}"
-        if losses else "[LearnedRanker] Training cancelled before any steps"
+        if losses
+        else "[LearnedRanker] Training cancelled before any steps"
     )
 
     return stats
@@ -762,13 +759,13 @@ def _compute_ndcg(model: RankingModel, samples: list, k: int = 5) -> float:
     # DCG@k
     dcg = 0.0
     for i, (_, rel) in enumerate(scored[:k]):
-        dcg += (2 ** rel - 1) / math.log2(i + 2)
+        dcg += (2**rel - 1) / math.log2(i + 2)
 
     # IDCG@k (ideal ordering)
     ideal = sorted([o for _, o in scored], reverse=True)
     idcg = 0.0
     for i, rel in enumerate(ideal[:k]):
-        idcg += (2 ** rel - 1) / math.log2(i + 2)
+        idcg += (2**rel - 1) / math.log2(i + 2)
 
     return dcg / idcg if idcg > 0 else 0.0
 
@@ -776,6 +773,7 @@ def _compute_ndcg(model: RankingModel, samples: list, k: int = 5) -> float:
 # ============================================================================
 # GRADUATION FROM SHADOW MODE
 # ============================================================================
+
 
 def check_graduation_readiness() -> Optional[dict]:
     """
@@ -791,6 +789,7 @@ def check_graduation_readiness() -> Optional[dict]:
     is not enabled or data is insufficient to evaluate.
     """
     import maasv
+
     config = maasv.get_config()
 
     if not config.learned_ranker_enabled:
@@ -802,15 +801,13 @@ def check_graduation_readiness() -> Optional[dict]:
 
     with _db() as db:
         # Count shadow comparisons
-        count_row = db.execute(
-            "SELECT COUNT(*) as n FROM shadow_metrics"
-        ).fetchone()
+        count_row = db.execute("SELECT COUNT(*) as n FROM shadow_metrics").fetchone()
         comparison_count = count_row["n"] if count_row else 0
 
         if comparison_count < config.learned_ranker_graduation_min_comparisons:
             return {
                 "ready": False,
-                "reason": f"insufficient_comparisons",
+                "reason": "insufficient_comparisons",
                 "comparisons": comparison_count,
                 "needed": config.learned_ranker_graduation_min_comparisons,
             }
@@ -861,7 +858,7 @@ def check_graduation_readiness() -> Optional[dict]:
     # Tau stability: std dev
     mean = avg_tau
     variance = sum((t - mean) ** 2 for t in taus) / len(taus)
-    tau_std = variance ** 0.5
+    tau_std = variance**0.5
 
     if tau_std > config.learned_ranker_graduation_max_tau_std:
         return {
@@ -896,6 +893,7 @@ def graduate_from_shadow_mode() -> bool:
     Returns True if graduated, False if already graduated or not enabled.
     """
     import maasv
+
     config = maasv.get_config()
 
     if not config.learned_ranker_enabled:

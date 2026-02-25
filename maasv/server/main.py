@@ -16,7 +16,7 @@ def _init_maasv():
     """Initialize maasv with configured providers."""
     import maasv
     from maasv.config import MaasvConfig
-    from maasv.server.providers import create_llm, create_embed
+    from maasv.server.providers import create_embed, create_llm
 
     config = MaasvConfig(
         db_path=Path(settings.db_path).resolve(),
@@ -40,8 +40,11 @@ def _init_maasv():
     maasv.init(config=config, llm=llm, embed=embed)
     logger.info(
         "maasv initialized: db=%s, embed_dims=%d, llm=%s, embed=%s/%s",
-        config.db_path, config.embed_dims, settings.llm_provider,
-        settings.embed_provider, settings.embed_model,
+        config.db_path,
+        config.embed_dims,
+        settings.llm_provider,
+        settings.embed_provider,
+        settings.embed_model,
     )
 
 
@@ -65,23 +68,31 @@ app = FastAPI(
 
 # --- Register routers ---
 
-from maasv.server.routers import memory, extraction, graph, wisdom, health  # noqa: E402
+from maasv.server.routers import extraction, graph, health, memory, wisdom  # noqa: E402
 
 # Protected routers — auth enforced via dependency injection
 app.include_router(
-    memory.router, prefix="/v1/memory", tags=["memory"],
+    memory.router,
+    prefix="/v1/memory",
+    tags=["memory"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
-    extraction.router, prefix="/v1", tags=["extraction"],
+    extraction.router,
+    prefix="/v1",
+    tags=["extraction"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
-    graph.router, prefix="/v1/graph", tags=["graph"],
+    graph.router,
+    prefix="/v1/graph",
+    tags=["graph"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
-    wisdom.router, prefix="/v1/wisdom", tags=["wisdom"],
+    wisdom.router,
+    prefix="/v1/wisdom",
+    tags=["wisdom"],
     dependencies=[Depends(require_auth)],
 )
 

@@ -21,9 +21,12 @@ def _check_metadata_size(v: dict | None) -> dict | None:
 
 # --- Request models ---
 
+
 class CreateEntityRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=500)
-    entity_type: str = Field(..., min_length=1, max_length=50, description="person, place, project, org, event, technology")
+    entity_type: str = Field(
+        ..., min_length=1, max_length=50, description="person, place, project, org, event, technology"
+    )
     canonical_name: Optional[str] = Field(None, max_length=500)
     metadata: Optional[dict] = None
 
@@ -51,6 +54,7 @@ class SearchEntitiesRequest(BaseModel):
 
 
 # --- Endpoints ---
+
 
 @router.post("/entities")
 def create_or_find_entity(req: CreateEntityRequest):

@@ -22,6 +22,7 @@ def run_learn_job(data: dict, cancel_check: Callable[[], bool]):
     Phase 3: Check if learned ranker is ready to graduate from shadow mode.
     """
     import maasv
+
     config = maasv.get_config()
 
     if not config.learned_ranker_enabled:
@@ -29,7 +30,10 @@ def run_learn_job(data: dict, cancel_check: Callable[[], bool]):
         return
 
     from maasv.core.learned_ranker import (
-        label_outcomes, train, check_graduation_readiness, graduate_from_shadow_mode,
+        check_graduation_readiness,
+        graduate_from_shadow_mode,
+        label_outcomes,
+        train,
     )
 
     # Phase 1: Label outcomes
@@ -93,6 +97,5 @@ def run_learn_job(data: dict, cancel_check: Callable[[], bool]):
             )
     else:
         logger.debug(
-            f"[Learn] Graduation not ready: {readiness['reason']} "
-            f"(comparisons={readiness.get('comparisons', 0)})"
+            f"[Learn] Graduation not ready: {readiness['reason']} (comparisons={readiness.get('comparisons', 0)})"
         )

@@ -5,13 +5,13 @@ Runs consolidation jobs when idle, cancels immediately
 when activity resumes. Jobs are designed to be interruptible.
 """
 
-import threading
-import queue
 import logging
+import queue
+import threading
 import time
 from dataclasses import dataclass
-from typing import Optional, Callable
 from enum import Enum
+from typing import Callable, Optional
 
 logger = logging.getLogger("maasv.lifecycle")
 
@@ -27,6 +27,7 @@ class JobType(Enum):
 @dataclass
 class SleepJob:
     """A sleep-time compute job."""
+
     job_type: JobType
     data: dict
     priority: int = 0
@@ -134,18 +135,23 @@ class SleepWorker:
 
             if job.job_type == JobType.INFERENCE:
                 from maasv.lifecycle.inference import run_inference_job
+
                 run_inference_job(job.data, cancel_check=self.is_cancelled)
             elif job.job_type == JobType.REVIEW:
                 from maasv.lifecycle.review import run_review_job
+
                 run_review_job(job.data, cancel_check=self.is_cancelled)
             elif job.job_type == JobType.REORGANIZE:
                 from maasv.lifecycle.reorganize import run_reorganize_job
+
                 run_reorganize_job(job.data, cancel_check=self.is_cancelled)
             elif job.job_type == JobType.MEMORY_HYGIENE:
                 from maasv.lifecycle.memory_hygiene import run_memory_hygiene_job
+
                 run_memory_hygiene_job(job.data, cancel_check=self.is_cancelled)
             elif job.job_type == JobType.LEARN:
                 from maasv.lifecycle.learn import run_learn_job
+
                 run_learn_job(job.data, cancel_check=self.is_cancelled)
 
             elapsed = time.time() - start
@@ -181,9 +187,7 @@ _IDLE_CHECK_INTERVAL = 5
 
 
 def start_idle_monitor(
-    get_last_activity: Callable[[], float],
-    on_idle: Callable[[], None],
-    on_active: Callable[[], None]
+    get_last_activity: Callable[[], float], on_idle: Callable[[], None], on_active: Callable[[], None]
 ):
     """Start the idle monitor thread."""
     global _idle_monitor_thread, _idle_monitor_running, _IDLE_THRESHOLD, _IDLE_CHECK_INTERVAL
@@ -195,6 +199,7 @@ def start_idle_monitor(
         # Read thresholds from config if initialized
         try:
             import maasv
+
             config = maasv.get_config()
             _IDLE_THRESHOLD = config.idle_threshold_seconds
             _IDLE_CHECK_INTERVAL = config.idle_check_interval

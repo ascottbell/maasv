@@ -6,16 +6,14 @@ Uses a shared temp DB per session via module-scoped fixture.
 
 import json
 import math
-import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
-
 
 # ============================================================================
 # MOCK PROVIDERS
 # ============================================================================
+
 
 class MockEmbedProvider:
     def __init__(self, dims=64):
@@ -23,11 +21,12 @@ class MockEmbedProvider:
 
     def embed(self, text: str) -> list[float]:
         import hashlib
+
         h = hashlib.sha256(text.encode()).digest()
         vec = [b / 255.0 for b in h]
         while len(vec) < self.dims:
             vec.extend(vec)
-        return vec[:self.dims]
+        return vec[: self.dims]
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed(text)
@@ -42,11 +41,12 @@ class MockLLMProvider:
 # FIXTURES
 # ============================================================================
 
+
 @pytest.fixture(scope="module")
 def maasv_db(tmp_path_factory):
     """Initialize maasv with a fresh test database."""
-    from maasv.config import MaasvConfig
     import maasv
+    from maasv.config import MaasvConfig
 
     tmpdir = tmp_path_factory.mktemp("learned_ranker_test")
     db_path = tmpdir / "test.db"
@@ -111,9 +111,11 @@ def sample_candidates():
 # AUTOGRAD TESTS
 # ============================================================================
 
+
 class TestAutograd:
     def test_addition(self):
         from maasv.core.autograd import Value
+
         a = Value(2.0)
         b = Value(3.0)
         c = a + b
@@ -124,6 +126,7 @@ class TestAutograd:
 
     def test_multiplication(self):
         from maasv.core.autograd import Value
+
         a = Value(3.0)
         b = Value(4.0)
         c = a * b
@@ -134,6 +137,7 @@ class TestAutograd:
 
     def test_subtraction(self):
         from maasv.core.autograd import Value
+
         a = Value(5.0)
         b = Value(3.0)
         c = a - b
@@ -144,6 +148,7 @@ class TestAutograd:
 
     def test_division(self):
         from maasv.core.autograd import Value
+
         a = Value(6.0)
         b = Value(3.0)
         c = a / b
@@ -153,14 +158,16 @@ class TestAutograd:
 
     def test_power(self):
         from maasv.core.autograd import Value
+
         a = Value(3.0)
-        c = a ** 2
+        c = a**2
         assert c.data == 9.0
         c.backward()
         assert a.grad == 6.0  # d/da(a^2) = 2a = 6
 
     def test_relu(self):
         from maasv.core.autograd import Value
+
         a = Value(3.0)
         b = Value(-2.0)
         c = a.relu()
@@ -174,6 +181,7 @@ class TestAutograd:
 
     def test_sigmoid(self):
         from maasv.core.autograd import Value
+
         a = Value(0.0)
         c = a.sigmoid()
         assert abs(c.data - 0.5) < 1e-6
@@ -182,12 +190,14 @@ class TestAutograd:
 
     def test_sigmoid_negative(self):
         from maasv.core.autograd import Value
+
         a = Value(-5.0)
         c = a.sigmoid()
         assert c.data < 0.01  # Should be close to 0
 
     def test_log(self):
         from maasv.core.autograd import Value
+
         a = Value(math.e)
         c = a.log()
         assert abs(c.data - 1.0) < 1e-6
@@ -197,6 +207,7 @@ class TestAutograd:
     def test_chain(self):
         """Test a multi-operation chain."""
         from maasv.core.autograd import Value
+
         x = Value(2.0)
         y = Value(3.0)
         z = (x * y + Value(1.0)).relu()
@@ -208,6 +219,7 @@ class TestAutograd:
     def test_scalar_ops(self):
         """Test operations with plain numbers."""
         from maasv.core.autograd import Value
+
         a = Value(3.0)
         b = a + 2
         assert b.data == 5.0
@@ -223,9 +235,11 @@ class TestAutograd:
 # RANKING MODEL TESTS
 # ============================================================================
 
+
 class TestRankingModel:
     def test_init(self):
-        from maasv.core.learned_ranker import RankingModel, N_FEATURES
+        from maasv.core.learned_ranker import RankingModel
+
         model = RankingModel()
         params = model.parameters()
         # 8*8 (w1) + 8 (b1) + 1*8 (w2) + 1 (b2) = 81
@@ -233,7 +247,8 @@ class TestRankingModel:
 
     def test_forward(self):
         from maasv.core.autograd import Value
-        from maasv.core.learned_ranker import RankingModel, N_FEATURES
+        from maasv.core.learned_ranker import N_FEATURES, RankingModel
+
         model = RankingModel()
         x = [Value(0.5) for _ in range(N_FEATURES)]
         out = model.forward(x)
@@ -241,7 +256,8 @@ class TestRankingModel:
 
     def test_backward(self):
         from maasv.core.autograd import Value
-        from maasv.core.learned_ranker import RankingModel, N_FEATURES
+        from maasv.core.learned_ranker import N_FEATURES, RankingModel
+
         model = RankingModel()
         x = [Value(0.5) for _ in range(N_FEATURES)]
         out = model.forward(x)
@@ -252,6 +268,7 @@ class TestRankingModel:
 
     def test_state_dict_roundtrip(self):
         from maasv.core.learned_ranker import RankingModel
+
         model = RankingModel()
         state = model.state_dict()
 
@@ -264,7 +281,8 @@ class TestRankingModel:
     def test_deterministic_forward(self):
         """Same weights + same input = same output."""
         from maasv.core.autograd import Value
-        from maasv.core.learned_ranker import RankingModel, N_FEATURES
+        from maasv.core.learned_ranker import N_FEATURES, RankingModel
+
         model = RankingModel()
         state = model.state_dict()
 
@@ -283,9 +301,11 @@ class TestRankingModel:
 # FEATURE EXTRACTION TESTS
 # ============================================================================
 
+
 class TestFeatureExtraction:
     def test_basic_features(self, sample_candidates):
-        from maasv.core.learned_ranker import extract_features, N_FEATURES
+        from maasv.core.learned_ranker import N_FEATURES, extract_features
+
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]
         features = extract_features(
@@ -301,6 +321,7 @@ class TestFeatureExtraction:
 
     def test_vector_similarity(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]
         features = extract_features(
@@ -315,6 +336,7 @@ class TestFeatureExtraction:
 
     def test_no_vector_distance(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]
         features = extract_features(
@@ -329,34 +351,31 @@ class TestFeatureExtraction:
 
     def test_binary_signals(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]
 
         # BM25 hit
-        features = extract_features(
-            mem, {}, {"mem_001"}, set(), set(), now
-        )
+        features = extract_features(mem, {}, {"mem_001"}, set(), set(), now)
         assert features[1] == 1.0  # bm25_hit
         assert features[2] == 0.0  # graph_hit
 
         # Graph hit
-        features = extract_features(
-            mem, {}, set(), {"mem_001"}, set(), now
-        )
+        features = extract_features(mem, {}, set(), {"mem_001"}, set(), now)
         assert features[1] == 0.0
         assert features[2] == 1.0
 
     def test_protected_category_no_decay(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]  # category=identity
-        features = extract_features(
-            mem, {}, set(), set(), {"identity", "family"}, now
-        )
+        features = extract_features(mem, {}, set(), set(), {"identity", "family"}, now)
         assert features[4] == 1.0  # age_decay = 1.0 for protected
 
     def test_unprotected_decay(self):
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
         old_mem = {
             "id": "mem_old",
@@ -366,25 +385,23 @@ class TestFeatureExtraction:
             "access_count": 0,
             "created_at": (now - timedelta(days=180)).isoformat(),
         }
-        features = extract_features(
-            old_mem, {}, set(), set(), set(), now
-        )
+        features = extract_features(old_mem, {}, set(), set(), set(), now)
         # exp(-180/180) = exp(-1) ≈ 0.368
         assert abs(features[4] - math.exp(-1)) < 0.01
 
     def test_ips_utility_with_surfacing(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]  # access_count=5, surfacing_count=10
-        features = extract_features(
-            mem, {}, set(), set(), set(), now
-        )
+        features = extract_features(mem, {}, set(), set(), set(), now)
         # raw_utility = 5/10 = 0.5, min(0.5, 2.0)/2.0 = 0.25
         expected = min(5 / 10, 2.0) / 2.0
         assert abs(features[5] - expected) < 1e-6
 
     def test_ips_utility_cold_start(self):
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
         mem = {
             "id": "mem_cold",
@@ -395,9 +412,7 @@ class TestFeatureExtraction:
             "surfacing_count": 0,
             "created_at": now.isoformat(),
         }
-        features = extract_features(
-            mem, {}, set(), set(), set(), now
-        )
+        features = extract_features(mem, {}, set(), set(), set(), now)
         # Cold-start fallback: log(2 + min(3, 5)) / log(7)
         expected = math.log(2 + 3) / math.log(7)
         assert abs(features[5] - expected) < 1e-6
@@ -407,10 +422,12 @@ class TestFeatureExtraction:
 # RETRIEVAL LOGGING TESTS
 # ============================================================================
 
+
 class TestRetrievalLogging:
     def test_log_retrieval(self, maasv_db, sample_candidates):
-        from maasv.core.learned_ranker import log_retrieval
         from maasv.core.db import _db
+        from maasv.core.learned_ranker import log_retrieval
+
         now = datetime.now(timezone.utc)
 
         log_retrieval(
@@ -438,6 +455,7 @@ class TestRetrievalLogging:
     def test_log_retrieval_is_best_effort(self, maasv_db):
         """Logging should not raise even with bad input."""
         from maasv.core.learned_ranker import log_retrieval
+
         now = datetime.now(timezone.utc)
         # This should not raise
         log_retrieval(
@@ -456,10 +474,11 @@ class TestRetrievalLogging:
 # OUTCOME LABELING TESTS
 # ============================================================================
 
+
 class TestOutcomeLabeling:
     def test_label_outcomes(self, maasv_db, sample_candidates):
-        from maasv.core.learned_ranker import log_retrieval, label_outcomes
         from maasv.core.db import _db
+        from maasv.core.learned_ranker import label_outcomes, log_retrieval
 
         # Insert a retrieval log entry with old timestamp (>2hrs ago)
         old_time = datetime.now(timezone.utc) - timedelta(hours=3)
@@ -497,6 +516,7 @@ class TestOutcomeLabeling:
 
     def test_label_respects_cancellation(self, maasv_db):
         from maasv.core.learned_ranker import label_outcomes
+
         # Immediately cancelled
         labeled = label_outcomes(cancel_check=lambda: True)
         assert labeled == 0
@@ -506,11 +526,13 @@ class TestOutcomeLabeling:
 # TRAINING TESTS
 # ============================================================================
 
+
 class TestTraining:
     def _seed_training_data(self, n=20):
         """Insert enough labeled retrieval logs for training."""
-        from maasv.core.db import _db
         import uuid
+
+        from maasv.core.db import _db
 
         now = datetime.now(timezone.utc)
         with _db() as db:
@@ -520,11 +542,11 @@ class TestTraining:
                         0.5 + 0.3 * (i % 3 == 0),  # vector_similarity
                         1.0 if i % 2 == 0 else 0.0,  # bm25_hit
                         1.0 if i % 3 == 0 else 0.0,  # graph_hit
-                        0.5 + 0.1 * (i % 5),          # importance
-                        0.8,                            # age_decay
-                        0.6,                            # access_count_norm
-                        0.3,                            # category_code
-                        1.0 / (1 + i),                  # rrf_rank_norm
+                        0.5 + 0.1 * (i % 5),  # importance
+                        0.8,  # age_decay
+                        0.6,  # access_count_norm
+                        0.3,  # category_code
+                        1.0 / (1 + i),  # rrf_rank_norm
                     ]
                 }
                 # High-scoring features -> positive outcome
@@ -551,7 +573,8 @@ class TestTraining:
             db.commit()
 
     def test_train_reduces_loss(self, maasv_db):
-        from maasv.core.learned_ranker import train, reload_model
+        from maasv.core.learned_ranker import reload_model, train
+
         reload_model()  # Clear any cached model
 
         self._seed_training_data(n=20)
@@ -572,9 +595,7 @@ class TestTraining:
         from maasv.core.db import _db
 
         with _db() as db:
-            row = db.execute(
-                "SELECT * FROM learned_ranker_weights WHERE id = 1"
-            ).fetchone()
+            row = db.execute("SELECT * FROM learned_ranker_weights WHERE id = 1").fetchone()
 
         assert row is not None
         weights = json.loads(row["weights_json"])
@@ -586,6 +607,7 @@ class TestTraining:
 
     def test_train_respects_cancellation(self, maasv_db):
         from maasv.core.learned_ranker import train
+
         # Cancel immediately
         stats = train(cancel_check=lambda: True, max_steps=100)
         # Should return quickly with 0 steps
@@ -593,7 +615,8 @@ class TestTraining:
             assert stats["steps"] == 0
 
     def test_ndcg_computed(self, maasv_db):
-        from maasv.core.learned_ranker import train, reload_model
+        from maasv.core.learned_ranker import reload_model, train
+
         reload_model()
 
         stats = train(cancel_check=lambda: False, max_steps=10)
@@ -606,11 +629,12 @@ class TestTraining:
 # SURFACING TRACKING TESTS
 # ============================================================================
 
+
 class TestSurfacingTracking:
     def test_log_retrieval_increments_surfacing(self, maasv_db, sample_candidates):
         """log_retrieval() should increment surfacing_count for all candidates."""
-        from maasv.core.learned_ranker import log_retrieval
         from maasv.core.db import _db
+        from maasv.core.learned_ranker import log_retrieval
         from maasv.core.store import store_memory
 
         # Store actual memories so surfacing_count can be updated
@@ -618,9 +642,7 @@ class TestSurfacingTracking:
 
         # Get initial surfacing_count
         with _db() as db:
-            before = db.execute(
-                "SELECT surfacing_count FROM memories WHERE id = ?", (mem_id,)
-            ).fetchone()
+            before = db.execute("SELECT surfacing_count FROM memories WHERE id = ?", (mem_id,)).fetchone()
         initial_count = before["surfacing_count"] if before else 0
 
         now = datetime.now(timezone.utc)
@@ -646,19 +668,16 @@ class TestSurfacingTracking:
         )
 
         with _db() as db:
-            after = db.execute(
-                "SELECT surfacing_count FROM memories WHERE id = ?", (mem_id,)
-            ).fetchone()
+            after = db.execute("SELECT surfacing_count FROM memories WHERE id = ?", (mem_id,)).fetchone()
         assert after["surfacing_count"] == initial_count + 1
 
     def test_migration_backfill(self, maasv_db):
         """surfacing_count column should exist after migration 9."""
         from maasv.core.db import _db
+
         with _db() as db:
             # Verify column exists by querying it
-            row = db.execute(
-                "SELECT surfacing_count FROM memories LIMIT 1"
-            ).fetchone()
+            db.execute("SELECT surfacing_count FROM memories LIMIT 1").fetchone()
             # Should not raise — column exists
 
 
@@ -666,10 +685,12 @@ class TestSurfacingTracking:
 # IPS UTILITY TESTS
 # ============================================================================
 
+
 class TestIPSUtility:
     def test_high_conversion_outscores_low(self):
         """Memory with high access/surfacing ratio should score higher."""
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
 
         high_conversion = {
@@ -691,12 +712,8 @@ class TestIPSUtility:
             "created_at": now.isoformat(),
         }
 
-        feat_high = extract_features(
-            high_conversion, {}, set(), set(), set(), now
-        )
-        feat_low = extract_features(
-            low_conversion, {}, set(), set(), set(), now
-        )
+        feat_high = extract_features(high_conversion, {}, set(), set(), set(), now)
+        feat_low = extract_features(low_conversion, {}, set(), set(), set(), now)
 
         # IPS utility (feature 5) should be higher for high-conversion memory
         assert feat_high[5] > feat_low[5]
@@ -704,6 +721,7 @@ class TestIPSUtility:
     def test_feature_normalization_bounds(self):
         """IPS utility feature should always be in [0, 1]."""
         from maasv.core.learned_ranker import extract_features
+
         now = datetime.now(timezone.utc)
 
         cases = [
@@ -724,13 +742,12 @@ class TestIPSUtility:
                 **case,
             }
             features = extract_features(mem, {}, set(), set(), set(), now)
-            assert 0.0 <= features[5] <= 1.0, (
-                f"IPS utility out of bounds for {case}: {features[5]}"
-            )
+            assert 0.0 <= features[5] <= 1.0, f"IPS utility out of bounds for {case}: {features[5]}"
 
     def test_importance_score_ips(self):
         """_importance_score should use IPS utility when surfacing_count > 0."""
         from maasv.core.retrieval import _importance_score
+
         now = datetime.now(timezone.utc)
 
         # Two memories: same access_count, different surfacing_count
@@ -770,12 +787,13 @@ class TestIPSUtility:
 # IPS-WEIGHTED TRAINING TESTS
 # ============================================================================
 
+
 class TestIPSWeightedTraining:
     def _seed_training_data_with_surfacing(self, n=20):
         """Insert labeled data with surfacing counts for IPS training."""
-        from maasv.core.db import _db
-        from maasv.core.store import store_memory
         import uuid
+
+        from maasv.core.db import _db
 
         now = datetime.now(timezone.utc)
         mem_ids = []
@@ -788,8 +806,7 @@ class TestIPSWeightedTraining:
                     """INSERT OR IGNORE INTO memories
                        (id, content, category, importance, access_count, surfacing_count, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (mid, f"IPS test memory {i}", "project", 0.5,
-                     i % 5, (i + 1) * 5, now.isoformat()),
+                    (mid, f"IPS test memory {i}", "project", 0.5, i % 5, (i + 1) * 5, now.isoformat()),
                 )
                 mem_ids.append(mid)
 
@@ -797,8 +814,14 @@ class TestIPSWeightedTraining:
                 mid = mem_ids[i]
                 features = {
                     mid: [
-                        0.5, 1.0 if i % 2 == 0 else 0.0, 0.0,
-                        0.5, 0.8, 0.6, 0.3, 1.0 / (1 + i),
+                        0.5,
+                        1.0 if i % 2 == 0 else 0.0,
+                        0.0,
+                        0.5,
+                        0.8,
+                        0.6,
+                        0.3,
+                        1.0 / (1 + i),
                     ]
                 }
                 outcomes = {mid: 1.0 if i % 3 == 0 else 0.0}
@@ -809,17 +832,23 @@ class TestIPSWeightedTraining:
                         candidate_count, returned_ids, features, outcomes, outcome_recorded_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        str(uuid.uuid4()), f"ips_query_{i}", f"hash_{i}",
+                        str(uuid.uuid4()),
+                        f"ips_query_{i}",
+                        f"hash_{i}",
                         (now - timedelta(hours=i)).isoformat(),
-                        1, json.dumps([mid]), json.dumps(features),
-                        json.dumps(outcomes), now.isoformat(),
+                        1,
+                        json.dumps([mid]),
+                        json.dumps(features),
+                        json.dumps(outcomes),
+                        now.isoformat(),
                     ),
                 )
             db.commit()
 
     def test_training_with_ips_weights(self, maasv_db):
         """Training should complete with IPS-weighted samples."""
-        from maasv.core.learned_ranker import train, reload_model
+        from maasv.core.learned_ranker import reload_model, train
+
         reload_model()
 
         self._seed_training_data_with_surfacing(n=20)
@@ -846,8 +875,8 @@ class TestIPSWeightedTraining:
 
     def test_feature_version_guard(self, maasv_db):
         """Model should not load if stored feature names don't match current."""
-        from maasv.core.learned_ranker import _get_model, reload_model, FEATURE_NAMES
         from maasv.core.db import _db
+        from maasv.core.learned_ranker import FEATURE_NAMES, _get_model, reload_model
 
         # Tamper with stored feature names
         with _db() as db:
@@ -877,6 +906,7 @@ class TestIPSWeightedTraining:
 # GRADUATION TESTS
 # ============================================================================
 
+
 class TestGraduation:
     def _seed_shadow_metrics(self, db, n=60, tau=0.6, overlap=4):
         """Insert shadow metrics for graduation testing."""
@@ -901,16 +931,15 @@ class TestGraduation:
     def test_shadow_metrics_table_exists(self, maasv_db):
         """Migration 10 should create shadow_metrics table."""
         from maasv.core.db import _db
+
         with _db() as db:
-            row = db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='shadow_metrics'"
-            ).fetchone()
+            row = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shadow_metrics'").fetchone()
         assert row is not None
 
     def test_shadow_compare_persists_metrics(self, maasv_db, sample_candidates):
         """shadow_compare() should write to shadow_metrics table."""
-        from maasv.core.learned_ranker import shadow_compare, RankingModel, reload_model
         from maasv.core.db import _db
+        from maasv.core.learned_ranker import RankingModel, reload_model, shadow_compare
 
         reload_model()
         model = RankingModel()
@@ -922,8 +951,13 @@ class TestGraduation:
             db.commit()
 
         shadow_compare(
-            model, sample_candidates, {"identity", "family"}, now,
-            {"mem_001": 0.2, "mem_002": 0.4}, {"mem_001"}, set(),
+            model,
+            sample_candidates,
+            {"identity", "family"},
+            now,
+            {"mem_001": 0.2, "mem_002": 0.4},
+            {"mem_001"},
+            set(),
         )
 
         with _db() as db:
@@ -932,9 +966,9 @@ class TestGraduation:
 
     def test_graduation_insufficient_comparisons(self, maasv_db):
         """Should report not ready when too few shadow comparisons."""
-        from maasv.core.learned_ranker import check_graduation_readiness
-        from maasv.core.db import _db
         import maasv
+        from maasv.core.db import _db
+        from maasv.core.learned_ranker import check_graduation_readiness
 
         config = maasv.get_config()
         original_shadow = config.learned_ranker_shadow_mode
@@ -955,9 +989,9 @@ class TestGraduation:
 
     def test_graduation_ready(self, maasv_db):
         """Should report ready when all criteria met."""
-        from maasv.core.learned_ranker import check_graduation_readiness
-        from maasv.core.db import _db
         import maasv
+        from maasv.core.db import _db
+        from maasv.core.learned_ranker import check_graduation_readiness
 
         config = maasv.get_config()
         original_shadow = config.learned_ranker_shadow_mode
@@ -986,9 +1020,9 @@ class TestGraduation:
 
     def test_graduation_low_tau_rejected(self, maasv_db):
         """Should reject when tau is too low (anti-correlated)."""
-        from maasv.core.learned_ranker import check_graduation_readiness
-        from maasv.core.db import _db
         import maasv
+        from maasv.core.db import _db
+        from maasv.core.learned_ranker import check_graduation_readiness
 
         config = maasv.get_config()
         original_shadow = config.learned_ranker_shadow_mode
@@ -1015,8 +1049,8 @@ class TestGraduation:
 
     def test_graduate_from_shadow_mode(self, maasv_db):
         """graduate_from_shadow_mode() should flip the config flag."""
-        from maasv.core.learned_ranker import graduate_from_shadow_mode
         import maasv
+        from maasv.core.learned_ranker import graduate_from_shadow_mode
 
         config = maasv.get_config()
         original = config.learned_ranker_shadow_mode
@@ -1035,8 +1069,8 @@ class TestGraduation:
 
     def test_graduation_skipped_when_not_shadow(self, maasv_db):
         """check_graduation_readiness returns None when not in shadow mode."""
-        from maasv.core.learned_ranker import check_graduation_readiness
         import maasv
+        from maasv.core.learned_ranker import check_graduation_readiness
 
         config = maasv.get_config()
         original = config.learned_ranker_shadow_mode
@@ -1050,8 +1084,8 @@ class TestGraduation:
 
     def test_learn_job_with_graduation_check(self, maasv_db):
         """Learn job should complete with graduation phase."""
-        from maasv.lifecycle.learn import run_learn_job
         import maasv
+        from maasv.lifecycle.learn import run_learn_job
 
         config = maasv.get_config()
         original = config.learned_ranker_shadow_mode
@@ -1068,16 +1102,19 @@ class TestGraduation:
 # INTEGRATION TESTS
 # ============================================================================
 
+
 class TestIntegration:
     def test_model_loads_after_training(self, maasv_db):
         from maasv.core.learned_ranker import _get_model, reload_model
+
         reload_model()
         model = _get_model()
         # Should load because we have training data and min_samples=5
         assert model is not None
 
     def test_score_returns_results(self, maasv_db, sample_candidates):
-        from maasv.core.learned_ranker import score, reload_model
+        from maasv.core.learned_ranker import reload_model, score
+
         reload_model()
         now = datetime.now(timezone.utc)
 
@@ -1103,24 +1140,24 @@ class TestIntegration:
     def test_score_fallback_when_disabled(self, maasv_db, sample_candidates):
         """score() returns None when learned ranker is disabled."""
         import maasv
+
         config = maasv.get_config()
         original = config.learned_ranker_enabled
         try:
             config.learned_ranker_enabled = False
             from maasv.core.learned_ranker import score
+
             now = datetime.now(timezone.utc)
-            result = score(
-                sample_candidates, set(), now, {}, set(), set()
-            )
+            result = score(sample_candidates, set(), now, {}, set(), set())
             assert result is None
         finally:
             config.learned_ranker_enabled = original
 
     def test_retrieval_logging_in_find_similar(self, maasv_db):
         """find_similar_memories() should log to retrieval_log."""
-        from maasv.core.store import store_memory
-        from maasv.core.retrieval import find_similar_memories
         from maasv.core.db import _db
+        from maasv.core.retrieval import find_similar_memories
+        from maasv.core.store import store_memory
 
         # Store some memories
         store_memory(content="The sky is blue today", category="context")
@@ -1132,7 +1169,7 @@ class TestIntegration:
             before = db.execute("SELECT COUNT(*) as c FROM retrieval_log").fetchone()["c"]
 
         # Run retrieval
-        results = find_similar_memories("What color is the sky?", limit=3)
+        find_similar_memories("What color is the sky?", limit=3)
 
         # Check count after
         with _db() as db:
@@ -1145,18 +1182,22 @@ class TestIntegration:
 # LEARN JOB TESTS
 # ============================================================================
 
+
 class TestLearnJob:
     def test_run_learn_job(self, maasv_db):
         from maasv.lifecycle.learn import run_learn_job
+
         # Should not raise
         run_learn_job(data={}, cancel_check=lambda: False)
 
     def test_learn_job_respects_cancellation(self, maasv_db):
         from maasv.lifecycle.learn import run_learn_job
+
         # Should return quickly
         run_learn_job(data={}, cancel_check=lambda: True)
 
     def test_learn_job_type_exists(self):
         from maasv.lifecycle.worker import JobType
+
         assert hasattr(JobType, "LEARN")
         assert JobType.LEARN.value == "learn"

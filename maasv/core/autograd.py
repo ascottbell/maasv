@@ -11,7 +11,7 @@ import math
 class Value:
     """Scalar value with automatic gradient computation."""
 
-    __slots__ = ('data', 'grad', '_backward', '_prev')
+    __slots__ = ("data", "grad", "_backward", "_prev")
 
     def __init__(self, data, _children=()):
         self.data = float(data)
@@ -29,6 +29,7 @@ class Value:
         def _backward():
             self.grad += out.grad
             other.grad += out.grad
+
         out._backward = _backward
         return out
 
@@ -42,6 +43,7 @@ class Value:
         def _backward():
             self.grad += other.data * out.grad
             other.grad += self.data * out.grad
+
         out._backward = _backward
         return out
 
@@ -58,17 +60,18 @@ class Value:
         return (-self) + other
 
     def __truediv__(self, other):
-        return self * (other ** -1)
+        return self * (other**-1)
 
     def __rtruediv__(self, other):
-        return other * (self ** -1)
+        return other * (self**-1)
 
     def __pow__(self, other):
         assert isinstance(other, (int, float)), "only int/float powers supported"
-        out = Value(self.data ** other, (self,))
+        out = Value(self.data**other, (self,))
 
         def _backward():
             self.grad += other * (self.data ** (other - 1)) * out.grad
+
         out._backward = _backward
         return out
 
@@ -77,6 +80,7 @@ class Value:
 
         def _backward():
             self.grad += (1.0 if out.data > 0 else 0.0) * out.grad
+
         out._backward = _backward
         return out
 
@@ -91,6 +95,7 @@ class Value:
 
         def _backward():
             self.grad += s * (1.0 - s) * out.grad
+
         out._backward = _backward
         return out
 
@@ -100,6 +105,7 @@ class Value:
 
         def _backward():
             self.grad += (1.0 / self.data) * out.grad
+
         out._backward = _backward
         return out
 

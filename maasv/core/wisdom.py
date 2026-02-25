@@ -8,15 +8,16 @@ Unlike factual memory (who is the user's spouse, what's their schedule), wisdom 
 experiential — patterns of what works and what doesn't, learned over time.
 """
 
+import json
 import logging
 import sqlite3
-import json
 import uuid
-from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
-from maasv.core.db import _plain_db as _db, _sanitize_fts_input
+from maasv.core.db import _plain_db as _db
+from maasv.core.db import _sanitize_fts_input
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WisdomEntry:
     """A single piece of experiential wisdom."""
+
     action_type: str
     reasoning: str
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -120,11 +122,16 @@ def log_reasoning(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                entry.id, entry.timestamp, entry.action_type,
+                entry.id,
+                entry.timestamp,
+                entry.action_type,
                 json.dumps(entry.action_data) if entry.action_data else None,
-                entry.trigger, entry.context, entry.reasoning, entry.outcome,
+                entry.trigger,
+                entry.context,
+                entry.reasoning,
+                entry.outcome,
                 json.dumps(entry.tags) if entry.tags else None,
-            )
+            ),
         )
         conn.commit()
         return entry.id
@@ -134,8 +141,7 @@ def record_outcome(wisdom_id: str, outcome: str, details: str = None) -> bool:
     """Record the outcome of an action."""
     with _db() as conn:
         cursor = conn.execute(
-            "UPDATE wisdom SET outcome = ?, outcome_details = ? WHERE id = ?",
-            (outcome, details, wisdom_id)
+            "UPDATE wisdom SET outcome = ?, outcome_details = ? WHERE id = ?", (outcome, details, wisdom_id)
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -149,7 +155,7 @@ def add_feedback(wisdom_id: str, score: int, notes: str = None) -> bool:
     with _db() as conn:
         cursor = conn.execute(
             "UPDATE wisdom SET feedback_score = ?, feedback_notes = ?, feedback_at = ? WHERE id = ?",
-            (score, notes, datetime.now(timezone.utc).isoformat(), wisdom_id)
+            (score, notes, datetime.now(timezone.utc).isoformat(), wisdom_id),
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -206,7 +212,7 @@ def search_wisdom(query: str, limit: int = 10) -> list[dict]:
                 ORDER BY rank
                 LIMIT ?
                 """,
-                (query, limit)
+                (query, limit),
             ).fetchall()
             return [_row_to_dict(row) for row in rows]
         except sqlite3.OperationalError:
@@ -217,19 +223,14 @@ def search_wisdom(query: str, limit: int = 10) -> list[dict]:
 def get_wisdom_by_id(wisdom_id: str) -> Optional[dict]:
     """Get a specific wisdom entry by ID."""
     with _db() as conn:
-        row = conn.execute(
-            "SELECT * FROM wisdom WHERE id = ?", (wisdom_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM wisdom WHERE id = ?", (wisdom_id,)).fetchone()
         return _row_to_dict(row) if row else None
 
 
 def get_recent_wisdom(limit: int = 10) -> list[dict]:
     """Get the most recent wisdom entries."""
     with _db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM wisdom ORDER BY timestamp DESC LIMIT ?",
-            (limit,)
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM wisdom ORDER BY timestamp DESC LIMIT ?", (limit,)).fetchall()
         return [_row_to_dict(row) for row in rows]
 
 
@@ -244,7 +245,7 @@ def get_pending_feedback(limit: int = 20) -> list[dict]:
             ORDER BY timestamp DESC
             LIMIT ?
             """,
-            (limit,)
+            (limit,),
         ).fetchall()
         return [_row_to_dict(row) for row in rows]
 
@@ -287,10 +288,7 @@ def update_wisdom(wisdom_id: str, **kwargs) -> bool:
     NOTE: Column names in set_clause come from allowed_fields intersection,
     not user input. If adding fields here, ensure names are safe SQL identifiers.
     """
-    allowed_fields = {
-        "reasoning", "context", "outcome", "outcome_details",
-        "feedback_score", "feedback_notes", "tags"
-    }
+    allowed_fields = {"reasoning", "context", "outcome", "outcome_details", "feedback_score", "feedback_notes", "tags"}
 
     updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
     if not updates:
@@ -303,10 +301,7 @@ def update_wisdom(wisdom_id: str, **kwargs) -> bool:
     values = list(updates.values()) + [wisdom_id]
 
     with _db() as conn:
-        cursor = conn.execute(
-            f"UPDATE wisdom SET {set_clause} WHERE id = ?",
-            values
-        )
+        cursor = conn.execute(f"UPDATE wisdom SET {set_clause} WHERE id = ?", values)
         conn.commit()
         return cursor.rowcount > 0
 
@@ -315,9 +310,7 @@ def get_stats() -> dict:
     """Get statistics about the wisdom database."""
     with _db() as conn:
         total = conn.execute("SELECT COUNT(*) FROM wisdom").fetchone()[0]
-        rated = conn.execute(
-            "SELECT COUNT(*) FROM wisdom WHERE feedback_score IS NOT NULL"
-        ).fetchone()[0]
+        rated = conn.execute("SELECT COUNT(*) FROM wisdom WHERE feedback_score IS NOT NULL").fetchone()[0]
 
         by_action = conn.execute(
             """
@@ -329,9 +322,9 @@ def get_stats() -> dict:
             """
         ).fetchall()
 
-        avg_score = conn.execute(
-            "SELECT AVG(feedback_score) FROM wisdom WHERE feedback_score IS NOT NULL"
-        ).fetchone()[0]
+        avg_score = conn.execute("SELECT AVG(feedback_score) FROM wisdom WHERE feedback_score IS NOT NULL").fetchone()[
+            0
+        ]
 
         return {
             "total_entries": total,
@@ -345,6 +338,7 @@ def get_stats() -> dict:
 def _get_action_families() -> dict[str, list[str]]:
     """Get action families from config."""
     import maasv
+
     try:
         return maasv.get_config().action_families
     except RuntimeError:
@@ -380,9 +374,7 @@ def get_family_actions(action_type: str) -> list[str]:
 
 
 def should_query_wisdom(
-    action_type: str,
-    threshold_executions: int = 10,
-    threshold_failure_rate: float = 0.1
+    action_type: str, threshold_executions: int = 10, threshold_failure_rate: float = 0.1
 ) -> tuple[bool, str]:
     """Determine if we should query wisdom before executing an action."""
     with _db() as conn:
@@ -396,7 +388,7 @@ def should_query_wisdom(
             FROM wisdom
             WHERE action_type = ?
             """,
-            (action_type,)
+            (action_type,),
         ).fetchone()
 
         total = stats["total"] or 0
@@ -438,7 +430,7 @@ def get_smart_wisdom(
                 timestamp DESC
             LIMIT ?
             """,
-            (action_type, limit)
+            (action_type, limit),
         ).fetchall()
         results.extend([_row_to_dict(r) for r in exact_rows])
 
@@ -463,7 +455,7 @@ def get_smart_wisdom(
                         timestamp DESC
                     LIMIT ?
                     """,
-                    (*sibling_actions, remaining)
+                    (*sibling_actions, remaining),
                 ).fetchall()
                 results.extend([_row_to_dict(r) for r in family_rows])
 
@@ -485,7 +477,7 @@ def get_smart_wisdom(
                         ORDER BY rank
                         LIMIT ?
                         """,
-                        (search_query, action_type, remaining)
+                        (search_query, action_type, remaining),
                     ).fetchall()
 
                     existing_ids = {r["id"] for r in results}
@@ -542,6 +534,7 @@ def format_smart_wisdom_for_prompt(entries: list[dict]) -> str:
 # Useful for agents that monitor external sources (email, calendar, feeds)
 # and need to learn which items warrant user notification.
 # ============================================================================
+
 
 def log_escalation_miss(
     source: str,
@@ -604,8 +597,7 @@ def get_escalation_patterns(source: str, limit: int = 10) -> list[dict]:
     with _db() as conn:
         miss_action = f"{source}_escalation_miss"
         rows = conn.execute(
-            "SELECT * FROM wisdom WHERE action_type = ? ORDER BY timestamp DESC LIMIT ?",
-            (miss_action, limit)
+            "SELECT * FROM wisdom WHERE action_type = ? ORDER BY timestamp DESC LIMIT ?", (miss_action, limit)
         ).fetchall()
         return [_row_to_dict(row) for row in rows]
 

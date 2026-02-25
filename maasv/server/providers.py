@@ -10,6 +10,7 @@ class AnthropicLLM:
 
     def __init__(self, api_key: str, default_model: str = "claude-haiku-4-5-20251001"):
         import anthropic
+
         self._client = anthropic.Anthropic(api_key=api_key)
         self._default_model = default_model
 
@@ -34,6 +35,7 @@ class OpenAILLM:
 
     def __init__(self, api_key: str, default_model: str = "gpt-4o-mini"):
         from openai import OpenAI
+
         self._client = OpenAI(api_key=api_key)
         self._default_model = default_model
 
@@ -58,6 +60,7 @@ class VoyageEmbed:
 
     def __init__(self, api_key: str, model: str = "voyage-3-lite"):
         import voyageai
+
         self._client = voyageai.Client(api_key=api_key)
         self._model = model
 
@@ -75,6 +78,7 @@ class OpenAIEmbed:
 
     def __init__(self, api_key: str, model: str = "text-embedding-3-small"):
         from openai import OpenAI
+
         self._client = OpenAI(api_key=api_key)
         self._model = model
 
@@ -100,6 +104,7 @@ def create_embed(provider: str, api_key: str = "", model: str = "", base_url: st
     """Factory for embedding providers."""
     if provider == "ollama":
         from maasv.providers.ollama import OllamaEmbed
+
         kwargs = {"dims": dims}
         if model:
             kwargs["model"] = model
