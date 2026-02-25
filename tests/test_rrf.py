@@ -193,3 +193,27 @@ class TestAccessFrequencyBonus:
     def test_negative_access_returns_zero(self):
         """Negative access count treated as zero."""
         assert _access_frequency_bonus(-5, 0) == 0.0
+
+
+class TestSufficiencyConfig:
+    def test_default_disabled(self):
+        """Sufficiency gating is disabled by default (threshold=0.0)."""
+        from maasv.config import MaasvConfig
+        from pathlib import Path
+
+        config = MaasvConfig(db_path=Path("/tmp/test.db"))
+        assert config.sufficiency_threshold == 0.0
+        assert config.sufficiency_min_agreement == 2
+
+    def test_custom_threshold(self):
+        """Sufficiency threshold and min_agreement can be set."""
+        from maasv.config import MaasvConfig
+        from pathlib import Path
+
+        config = MaasvConfig(
+            db_path=Path("/tmp/test.db"),
+            sufficiency_threshold=0.3,
+            sufficiency_min_agreement=3,
+        )
+        assert config.sufficiency_threshold == 0.3
+        assert config.sufficiency_min_agreement == 3

@@ -52,6 +52,8 @@ class MaasvConfig:
     rrf_k_vector: int = 60  # RRF k for vector signal (higher = less top-heavy)
     rrf_k_bm25: int = 60  # RRF k for BM25 signal
     rrf_k_graph: int = 60  # RRF k for graph signal
+    sufficiency_threshold: float = 0.0  # L2 distance threshold for early exit (0.0 = disabled)
+    sufficiency_min_agreement: int = 2  # Min signals agreeing to trigger early exit
 
     # Cross-encoder reranking (opt-in: requires sentence-transformers + torch ~2GB)
     cross_encoder_enabled: bool = False

@@ -757,11 +757,46 @@ def find_similar_memories(
         # === Signal 2: BM25 keyword matching ===
         bm25_results = _find_memories_by_bm25(db, query, limit=RETRIEVAL_DEPTH)
 
-        # === Signal 3: Graph connectivity ===
-        graph_results = _find_memories_by_graph(db, query, limit=RETRIEVAL_DEPTH)
+        # === Sufficiency gate ===
+        # When vector + BM25 agree on great matches, skip expensive graph
+        # traversal and reranking. Saves ~50-200ms per query when top
+        # results are clearly sufficient.
+        config = maasv.get_config()
+        _sufficiency_met = False
+        if (
+            config.sufficiency_threshold > 0
+            and len(vector_results) >= limit
+        ):
+            # Check: do the top `limit` vector results all have distance
+            # below threshold? (low distance = high similarity)
+            top_vector = vector_results[:limit]
+            all_close = all(
+                r["distance"] <= config.sufficiency_threshold
+                for r in top_vector
+            )
+            if all_close:
+                # Check signal agreement: how many top vector results
+                # also appear in BM25?
+                top_vector_ids = {r["id"] for r in top_vector}
+                bm25_ids_set = {r["id"] for r in bm25_results}
+                agreement = len(top_vector_ids & bm25_ids_set)
+                if agreement >= config.sufficiency_min_agreement:
+                    _sufficiency_met = True
+                    logger.debug(
+                        "Sufficiency gate: skipping graph/reranker "
+                        "(top distance=%.4f, agreement=%d/%d)",
+                        top_vector[-1]["distance"],
+                        agreement,
+                        limit,
+                    )
+
+        # === Signal 3: Graph connectivity (skipped if sufficient) ===
+        if _sufficiency_met:
+            graph_results = []
+        else:
+            graph_results = _find_memories_by_graph(db, query, limit=RETRIEVAL_DEPTH)
 
         # === Fusion: Reciprocal Rank Fusion ===
-        config = maasv.get_config()
         signals_with_k = [
             (vector_results, config.rrf_k_vector),
             (bm25_results, config.rrf_k_bm25),
@@ -792,27 +827,35 @@ def find_similar_memories(
             candidates = [c for c in candidates if c.get("origin_interface") == origin_interface]
 
         # === Reranking ===
-        # Try cross-encoder first (best quality). Falls back to importance-weighted
-        # formula if cross-encoder is unavailable.
-        from maasv.core.reranker import rerank as ce_rerank
-
-        ce_scores = ce_rerank(query, candidates)
-
         vector_distances = {r["id"]: r["distance"] for r in vector_results}
         bm25_ids = {r["id"] for r in bm25_results}
         graph_ids = {r["id"] for r in graph_results}
 
-        # === Importance scoring ===
-        # Try learned ranker first; falls back to heuristic formula.
-        from maasv.core.learned_ranker import score as learned_score
-
-        lr_result = learned_score(candidates, protected, now, vector_distances, bm25_ids, graph_ids)
-        if lr_result is not None:
-            primary, supplementary = lr_result
-        else:
+        if _sufficiency_met:
+            # Skip expensive cross-encoder and learned ranker — the cheap
+            # signals already found great matches. Use heuristic scoring only.
+            ce_scores = None
             primary, supplementary = _importance_score(
                 candidates, protected, now, vector_distances, bm25_ids, graph_ids
             )
+        else:
+            # Try cross-encoder first (best quality). Falls back to importance-weighted
+            # formula if cross-encoder is unavailable.
+            from maasv.core.reranker import rerank as ce_rerank
+
+            ce_scores = ce_rerank(query, candidates)
+
+            # === Importance scoring ===
+            # Try learned ranker first; falls back to heuristic formula.
+            from maasv.core.learned_ranker import score as learned_score
+
+            lr_result = learned_score(candidates, protected, now, vector_distances, bm25_ids, graph_ids)
+            if lr_result is not None:
+                primary, supplementary = lr_result
+            else:
+                primary, supplementary = _importance_score(
+                    candidates, protected, now, vector_distances, bm25_ids, graph_ids
+                )
 
         if ce_scores is not None:
             # === Two-stage reranking ===
