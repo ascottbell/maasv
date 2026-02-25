@@ -59,13 +59,30 @@ def _access_frequency_bonus(access_count: int, surfacing_count: int) -> float:
     return min(0.01 * raw * conversion_rate, 0.04)
 
 
+def _normalize_bm25_scores(bm25_results: list[dict]) -> dict[str, float]:
+    """
+    Normalize BM25 scores from FTS5 to [0, 1] range.
+
+    FTS5 bm25() returns negative values (more negative = more relevant).
+    We negate and scale so the best match in the batch = 1.0.
+    """
+    if not bm25_results:
+        return {}
+    raw = {r["id"]: r.get("bm25_score", 0.0) for r in bm25_results}
+    negated = {k: -v for k, v in raw.items()}
+    max_val = max(negated.values()) if negated else 0.0
+    if max_val <= 0:
+        return {k: 0.0 for k in raw}
+    return {k: v / max_val for k, v in negated.items()}
+
+
 def _importance_score(
     candidates: list[dict],
     protected: set[str],
     now: datetime,
     vector_distances: dict[str, float],
-    bm25_ids: set[str],
-    graph_ids: set[str],
+    bm25_scores: dict[str, float],
+    graph_scores: dict[str, float],
 ) -> tuple[list[dict], list[dict]]:
     """
     Score candidates by importance-weighted formula. Separates into primary
@@ -114,12 +131,10 @@ def _importance_score(
             # close matches but can't override a strong vector match.
             vector_sim = 1.0 - distance
             tiebreaker = 0.05 * importance * decay_factor * ips_utility
-            signal_count = 1
-            if mem["id"] in bm25_ids:
-                signal_count += 1
-            if mem["id"] in graph_ids:
-                signal_count += 1
-            agreement_bonus = (signal_count - 1) * 0.03
+            # Continuous agreement bonus: weighted by actual signal strength
+            bm25_val = bm25_scores.get(mem["id"], 0.0)
+            graph_val = graph_scores.get(mem["id"], 0.0)
+            agreement_bonus = 0.03 * bm25_val + 0.03 * graph_val
             mem["_imp_score"] = vector_sim + tiebreaker + agreement_bonus + freq_bonus
             primary.append(mem)
         else:
@@ -695,6 +710,51 @@ def _reciprocal_rank_fusion(
 MAX_RETRIEVAL_LIMIT = 200
 
 
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors. Returns 0.0 on degenerate input."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return max(0.0, min(dot / (norm_a * norm_b), 1.0))
+
+
+def _compute_session_features(
+    query_embedding: list[float],
+    session_context: Optional[dict],
+) -> Optional[dict]:
+    """
+    Compute session-level features from session_context.
+
+    Returns a dict with per-query scalars (query_coherence, session_depth_norm)
+    and per-candidate data (seen_categories, seen_subjects) for extract_features().
+    Returns None if no session_context provided.
+    """
+    if not session_context:
+        return None
+
+    # Query coherence: cosine similarity with previous query embedding
+    prev_embedding = session_context.get("previous_query_embedding")
+    if prev_embedding and query_embedding:
+        query_coherence = _cosine_similarity(query_embedding, prev_embedding)
+    else:
+        query_coherence = 0.0
+
+    # Session depth: 1/(1+n), first query = 1.0
+    retrieval_count = session_context.get("retrieval_count", 0)
+    session_depth_norm = 1.0 / (1.0 + retrieval_count)
+
+    return {
+        "query_coherence": query_coherence,
+        "session_depth_norm": session_depth_norm,
+        "seen_categories": session_context.get("seen_categories"),
+        "seen_subjects": session_context.get("seen_subjects"),
+    }
+
+
 def find_similar_memories(
     query: str,
     limit: int = 5,
@@ -702,9 +762,15 @@ def find_similar_memories(
     subject: Optional[str] = None,
     origin: Optional[str] = None,
     origin_interface: Optional[str] = None,
+    session_context: Optional[dict] = None,
 ) -> list[dict]:
     """
     Find memories using 3-signal retrieval with cross-encoder reranking.
+
+    Args:
+        session_context: Optional dict with session state for contextual ranking.
+            Keys: previous_query_embedding (list[float]), retrieval_count (int),
+            seen_categories (set[str]), seen_subjects (set[str]).
 
     Pipeline:
     1. Dense vector similarity -> top N candidates
@@ -736,6 +802,10 @@ def find_similar_memories(
     with _db() as db:
         # === Signal 1: Dense vector similarity ===
         query_embedding = get_query_embedding(query)
+
+        # Compute session features for contextual ranking
+        session_features = _compute_session_features(query_embedding, session_context)
+
         vector_rows = db.execute(
             """
             SELECT
@@ -828,15 +898,15 @@ def find_similar_memories(
 
         # === Reranking ===
         vector_distances = {r["id"]: r["distance"] for r in vector_results}
-        bm25_ids = {r["id"] for r in bm25_results}
-        graph_ids = {r["id"] for r in graph_results}
+        bm25_scores = _normalize_bm25_scores(bm25_results)
+        graph_scores = {r["id"]: r.get("graph_score", 0.0) for r in graph_results}
 
         if _sufficiency_met:
             # Skip expensive cross-encoder and learned ranker — the cheap
             # signals already found great matches. Use heuristic scoring only.
             ce_scores = None
             primary, supplementary = _importance_score(
-                candidates, protected, now, vector_distances, bm25_ids, graph_ids
+                candidates, protected, now, vector_distances, bm25_scores, graph_scores
             )
         else:
             # Try cross-encoder first (best quality). Falls back to importance-weighted
@@ -849,12 +919,12 @@ def find_similar_memories(
             # Try learned ranker first; falls back to heuristic formula.
             from maasv.core.learned_ranker import score as learned_score
 
-            lr_result = learned_score(candidates, protected, now, vector_distances, bm25_ids, graph_ids)
+            lr_result = learned_score(candidates, protected, now, vector_distances, bm25_scores, graph_scores, session_features=session_features)
             if lr_result is not None:
                 primary, supplementary = lr_result
             else:
                 primary, supplementary = _importance_score(
-                    candidates, protected, now, vector_distances, bm25_ids, graph_ids
+                    candidates, protected, now, vector_distances, bm25_scores, graph_scores
                 )
 
         if ce_scores is not None:
@@ -995,10 +1065,11 @@ def find_similar_memories(
                 candidates=candidates,
                 returned_ids=[r["id"] for r in result],
                 vector_distances=vector_distances,
-                bm25_ids=bm25_ids,
-                graph_ids=graph_ids,
+                bm25_scores=bm25_scores,
+                graph_scores=graph_scores,
                 protected=protected,
                 now=now,
+                session_features=session_features,
             )
         except Exception:
             pass

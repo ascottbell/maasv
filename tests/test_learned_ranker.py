@@ -242,8 +242,8 @@ class TestRankingModel:
 
         model = RankingModel()
         params = model.parameters()
-        # 8*8 (w1) + 8 (b1) + 1*8 (w2) + 1 (b2) = 81
-        assert len(params) == 81
+        # 12*16 (w1) + 16 (b1) + 1*16 (w2) + 1 (b2) = 225
+        assert len(params) == 225
 
     def test_forward(self):
         from maasv.core.autograd import Value
@@ -311,8 +311,8 @@ class TestFeatureExtraction:
         features = extract_features(
             mem,
             vector_distances={"mem_001": 0.3},
-            bm25_ids={"mem_001"},
-            graph_ids=set(),
+            bm25_scores={"mem_001": 1.0},
+            graph_scores={},
             protected={"identity", "family"},
             now=now,
         )
@@ -327,8 +327,8 @@ class TestFeatureExtraction:
         features = extract_features(
             mem,
             vector_distances={"mem_001": 0.2},
-            bm25_ids=set(),
-            graph_ids=set(),
+            bm25_scores={},
+            graph_scores={},
             protected={"identity", "family"},
             now=now,
         )
@@ -342,35 +342,45 @@ class TestFeatureExtraction:
         features = extract_features(
             mem,
             vector_distances={},
-            bm25_ids=set(),
-            graph_ids=set(),
+            bm25_scores={},
+            graph_scores={},
             protected=set(),
             now=now,
         )
         assert features[0] == 0.0  # No vector distance -> 0
 
-    def test_binary_signals(self, sample_candidates):
+    def test_continuous_signals(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
 
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]
 
-        # BM25 hit
-        features = extract_features(mem, {}, {"mem_001"}, set(), set(), now)
-        assert features[1] == 1.0  # bm25_hit
-        assert features[2] == 0.0  # graph_hit
+        # BM25 score (continuous)
+        features = extract_features(mem, {}, {"mem_001": 0.75}, {}, set(), now)
+        assert features[1] == 0.75  # bm25_score
+        assert features[2] == 0.0  # graph_score
 
-        # Graph hit
-        features = extract_features(mem, {}, set(), {"mem_001"}, set(), now)
+        # Graph score (continuous)
+        features = extract_features(mem, {}, {}, {"mem_001": 0.8}, set(), now)
         assert features[1] == 0.0
-        assert features[2] == 1.0
+        assert features[2] == 0.8
+
+        # Both signals
+        features = extract_features(mem, {}, {"mem_001": 1.0}, {"mem_001": 0.6}, set(), now)
+        assert features[1] == 1.0
+        assert features[2] == 0.6
+
+        # Missing from both
+        features = extract_features(mem, {}, {}, {}, set(), now)
+        assert features[1] == 0.0
+        assert features[2] == 0.0
 
     def test_protected_category_no_decay(self, sample_candidates):
         from maasv.core.learned_ranker import extract_features
 
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]  # category=identity
-        features = extract_features(mem, {}, set(), set(), {"identity", "family"}, now)
+        features = extract_features(mem, {}, {}, {}, {"identity", "family"}, now)
         assert features[4] == 1.0  # age_decay = 1.0 for protected
 
     def test_unprotected_decay(self):
@@ -385,7 +395,7 @@ class TestFeatureExtraction:
             "access_count": 0,
             "created_at": (now - timedelta(days=180)).isoformat(),
         }
-        features = extract_features(old_mem, {}, set(), set(), set(), now)
+        features = extract_features(old_mem, {}, {}, {}, set(), now)
         # exp(-180/180) = exp(-1) ≈ 0.368
         assert abs(features[4] - math.exp(-1)) < 0.01
 
@@ -394,7 +404,7 @@ class TestFeatureExtraction:
 
         now = datetime.now(timezone.utc)
         mem = sample_candidates[0]  # access_count=5, surfacing_count=10
-        features = extract_features(mem, {}, set(), set(), set(), now)
+        features = extract_features(mem, {}, {}, {}, set(), now)
         # raw_utility = 5/10 = 0.5, min(0.5, 2.0)/2.0 = 0.25
         expected = min(5 / 10, 2.0) / 2.0
         assert abs(features[5] - expected) < 1e-6
@@ -412,10 +422,81 @@ class TestFeatureExtraction:
             "surfacing_count": 0,
             "created_at": now.isoformat(),
         }
-        features = extract_features(mem, {}, set(), set(), set(), now)
+        features = extract_features(mem, {}, {}, {}, set(), now)
         # Cold-start fallback: log(2 + min(3, 5)) / log(7)
         expected = math.log(2 + 3) / math.log(7)
         assert abs(features[5] - expected) < 1e-6
+
+    def test_session_features_default_zero(self, sample_candidates):
+        """Without session_features, session features default to 0.0."""
+        from maasv.core.learned_ranker import extract_features
+
+        now = datetime.now(timezone.utc)
+        mem = sample_candidates[0]
+        features = extract_features(mem, {}, {}, {}, set(), now)
+        # Features 8-11 are session context
+        assert features[8] == 0.0  # query_coherence
+        assert features[9] == 0.0  # session_depth_norm
+        assert features[10] == 0.0  # category_session_match
+        assert features[11] == 0.0  # subject_session_overlap
+
+    def test_session_features_populated(self, sample_candidates):
+        """Session features use session_context when provided."""
+        from maasv.core.learned_ranker import extract_features
+
+        now = datetime.now(timezone.utc)
+        mem = sample_candidates[0]  # category=identity, subject="Alex"
+        sf = {
+            "query_coherence": 0.85,
+            "session_depth_norm": 0.5,
+            "seen_categories": {"identity", "project"},
+            "seen_subjects": {"alex", "doris"},
+        }
+        features = extract_features(mem, {}, {}, {}, set(), now, session_features=sf)
+        assert abs(features[8] - 0.85) < 1e-6  # query_coherence
+        assert abs(features[9] - 0.5) < 1e-6  # session_depth_norm
+        assert features[10] == 1.0  # category_session_match (identity in seen)
+        assert features[11] == 1.0  # subject_session_overlap (alex in seen)
+
+    def test_session_category_no_match(self, sample_candidates):
+        """Category session match is 0.0 when category not in seen set."""
+        from maasv.core.learned_ranker import extract_features
+
+        now = datetime.now(timezone.utc)
+        mem = sample_candidates[0]  # category=identity
+        sf = {
+            "query_coherence": 0.0,
+            "session_depth_norm": 0.0,
+            "seen_categories": {"project", "preference"},
+            "seen_subjects": set(),
+        }
+        features = extract_features(mem, {}, {}, {}, set(), now, session_features=sf)
+        assert features[10] == 0.0  # identity not in {project, preference}
+
+    def test_session_subject_partial_overlap(self):
+        """Subject overlap is fractional when partial token match."""
+        from maasv.core.learned_ranker import extract_features
+
+        now = datetime.now(timezone.utc)
+        mem = {
+            "id": "mem_partial",
+            "content": "test",
+            "category": "project",
+            "subject": "doris voice interface",
+            "importance": 0.5,
+            "access_count": 0,
+            "created_at": now.isoformat(),
+        }
+        sf = {
+            "query_coherence": 0.0,
+            "session_depth_norm": 0.0,
+            "seen_categories": set(),
+            "seen_subjects": {"doris", "fastapi"},
+        }
+        features = extract_features(mem, {}, {}, {}, set(), now, session_features=sf)
+        # "doris voice interface" -> tokens {"doris", "voice", "interface"}
+        # Overlap with {"doris", "fastapi"} = {"doris"} -> 1/3 ≈ 0.333
+        assert abs(features[11] - 1.0 / 3.0) < 1e-6
 
 
 # ============================================================================
@@ -435,8 +516,8 @@ class TestRetrievalLogging:
             candidates=sample_candidates,
             returned_ids=["mem_001", "mem_002"],
             vector_distances={"mem_001": 0.2, "mem_002": 0.4},
-            bm25_ids={"mem_001"},
-            graph_ids=set(),
+            bm25_scores={"mem_001": 1.0},
+            graph_scores={},
             protected={"identity", "family"},
             now=now,
         )
@@ -450,7 +531,7 @@ class TestRetrievalLogging:
         assert "mem_001" in returned
         features = json.loads(row["features"])
         assert "mem_001" in features
-        assert len(features["mem_001"]) == 8
+        assert len(features["mem_001"]) == 12
 
     def test_log_retrieval_is_best_effort(self, maasv_db):
         """Logging should not raise even with bad input."""
@@ -463,8 +544,8 @@ class TestRetrievalLogging:
             candidates=[],
             returned_ids=[],
             vector_distances={},
-            bm25_ids=set(),
-            graph_ids=set(),
+            bm25_scores={},
+            graph_scores={},
             protected=set(),
             now=now,
         )
@@ -487,8 +568,8 @@ class TestOutcomeLabeling:
             candidates=sample_candidates,
             returned_ids=["mem_001"],
             vector_distances={"mem_001": 0.2},
-            bm25_ids=set(),
-            graph_ids=set(),
+            bm25_scores={},
+            graph_scores={},
             protected=set(),
             now=old_time,
         )
@@ -540,13 +621,17 @@ class TestTraining:
                 features = {
                     f"mem_{i:03d}": [
                         0.5 + 0.3 * (i % 3 == 0),  # vector_similarity
-                        1.0 if i % 2 == 0 else 0.0,  # bm25_hit
-                        1.0 if i % 3 == 0 else 0.0,  # graph_hit
+                        0.8 if i % 2 == 0 else 0.0,  # bm25_score
+                        0.6 if i % 3 == 0 else 0.0,  # graph_score
                         0.5 + 0.1 * (i % 5),  # importance
                         0.8,  # age_decay
                         0.6,  # access_count_norm
                         0.3,  # category_code
                         1.0 / (1 + i),  # rrf_rank_norm
+                        0.5,  # query_coherence
+                        0.3,  # session_depth_norm
+                        1.0 if i % 2 == 0 else 0.0,  # category_session_match
+                        0.2 if i % 4 == 0 else 0.0,  # subject_session_overlap
                     ]
                 }
                 # High-scoring features -> positive outcome
@@ -661,8 +746,8 @@ class TestSurfacingTracking:
             candidates=[candidate],
             returned_ids=[mem_id],
             vector_distances={mem_id: 0.3},
-            bm25_ids=set(),
-            graph_ids=set(),
+            bm25_scores={},
+            graph_scores={},
             protected=set(),
             now=now,
         )
@@ -712,8 +797,8 @@ class TestIPSUtility:
             "created_at": now.isoformat(),
         }
 
-        feat_high = extract_features(high_conversion, {}, set(), set(), set(), now)
-        feat_low = extract_features(low_conversion, {}, set(), set(), set(), now)
+        feat_high = extract_features(high_conversion, {}, {}, {}, set(), now)
+        feat_low = extract_features(low_conversion, {}, {}, {}, set(), now)
 
         # IPS utility (feature 5) should be higher for high-conversion memory
         assert feat_high[5] > feat_low[5]
@@ -741,7 +826,7 @@ class TestIPSUtility:
                 "created_at": now.isoformat(),
                 **case,
             }
-            features = extract_features(mem, {}, set(), set(), set(), now)
+            features = extract_features(mem, {}, {}, {}, set(), now)
             assert 0.0 <= features[5] <= 1.0, f"IPS utility out of bounds for {case}: {features[5]}"
 
     def test_importance_score_ips(self):
@@ -775,8 +860,8 @@ class TestIPSUtility:
             protected=set(),
             now=now,
             vector_distances={"mem_rare": 0.3, "mem_common": 0.3},
-            bm25_ids=set(),
-            graph_ids=set(),
+            bm25_scores={},
+            graph_scores={},
         )
 
         # mem_rare should score higher (5/5=1.0 ratio vs 5/50=0.1 ratio)
@@ -1123,8 +1208,8 @@ class TestIntegration:
             protected={"identity", "family"},
             now=now,
             vector_distances={"mem_001": 0.2, "mem_002": 0.4},
-            bm25_ids={"mem_001"},
-            graph_ids=set(),
+            bm25_scores={"mem_001": 1.0},
+            graph_scores={},
         )
 
         # Should not be None since shadow_mode=False and we have a trained model

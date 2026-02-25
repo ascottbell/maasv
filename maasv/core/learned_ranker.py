@@ -25,16 +25,22 @@ logger = logging.getLogger(__name__)
 # Feature names in order — must match extract_features() output
 FEATURE_NAMES = [
     "vector_similarity",
-    "bm25_hit",
-    "graph_hit",
+    "bm25_score",
+    "graph_score",
     "importance",
     "age_decay",
     "ips_utility",
     "category_code",
     "rrf_rank_norm",
+    # Session context features (0.0 when no session context provided)
+    "query_coherence",
+    "session_depth_norm",
+    "category_session_match",
+    "subject_session_overlap",
 ]
 
 N_FEATURES = len(FEATURE_NAMES)
+HIDDEN_SIZE = 16  # Scaled up from 8 to match increased feature count
 
 
 # ============================================================================
@@ -43,23 +49,26 @@ N_FEATURES = len(FEATURE_NAMES)
 
 
 class RankingModel:
-    """Linear(8,8) -> ReLU -> Linear(8,1) -> Sigmoid = 81 parameters."""
+    """Linear(N_FEATURES, HIDDEN_SIZE) -> ReLU -> Linear(HIDDEN_SIZE, 1) -> Sigmoid.
+
+    With 12 features and hidden=16: 12*16 + 16 + 16*1 + 1 = 225 parameters.
+    """
 
     def __init__(self):
         # Xavier-ish init for small nets
-        scale1 = (2.0 / (N_FEATURES + 8)) ** 0.5
-        scale2 = (2.0 / (8 + 1)) ** 0.5
+        scale1 = (2.0 / (N_FEATURES + HIDDEN_SIZE)) ** 0.5
+        scale2 = (2.0 / (HIDDEN_SIZE + 1)) ** 0.5
 
-        self.w1 = [[Value(random.gauss(0, scale1)) for _ in range(N_FEATURES)] for _ in range(8)]
-        self.b1 = [Value(0.0) for _ in range(8)]
-        self.w2 = [[Value(random.gauss(0, scale2)) for _ in range(8)] for _ in range(1)]
+        self.w1 = [[Value(random.gauss(0, scale1)) for _ in range(N_FEATURES)] for _ in range(HIDDEN_SIZE)]
+        self.b1 = [Value(0.0) for _ in range(HIDDEN_SIZE)]
+        self.w2 = [[Value(random.gauss(0, scale2)) for _ in range(HIDDEN_SIZE)] for _ in range(1)]
         self.b2 = [Value(0.0) for _ in range(1)]
 
     def forward(self, x: list[Value]) -> Value:
         """Forward pass: features -> relevance score in [0, 1]."""
         # Hidden layer
         h = []
-        for i in range(8):
+        for i in range(HIDDEN_SIZE):
             s = self.b1[i]
             for j in range(N_FEATURES):
                 s = s + self.w1[i][j] * x[j]
@@ -67,13 +76,13 @@ class RankingModel:
 
         # Output layer
         o = self.b2[0]
-        for i in range(8):
+        for i in range(HIDDEN_SIZE):
             o = o + self.w2[0][i] * h[i]
 
         return o.sigmoid()
 
     def parameters(self) -> list[Value]:
-        """All trainable parameters (81 total)."""
+        """All trainable parameters."""
         params = []
         for row in self.w1:
             params.extend(row)
@@ -206,14 +215,18 @@ def _get_category_priority() -> dict[str, int]:
 def extract_features(
     mem: dict,
     vector_distances: dict[str, float],
-    bm25_ids: set[str],
-    graph_ids: set[str],
+    bm25_scores: dict[str, float],
+    graph_scores: dict[str, float],
     protected: set[str],
     now: datetime,
     rrf_rank: int = 0,
+    session_features: Optional[dict] = None,
 ) -> list[float]:
     """
-    Extract 8 normalized features for a single memory candidate.
+    Extract 12 normalized features for a single memory candidate.
+
+    Features 1-8 are retrieval signals. Features 9-12 are session context
+    (all 0.0 when no session_features provided).
 
     All features normalized to [0, 1].
     """
@@ -223,11 +236,11 @@ def extract_features(
     dist = vector_distances.get(mid)
     vector_similarity = (1.0 - dist) if dist is not None else 0.0
 
-    # 2. BM25 hit (binary)
-    bm25_hit = 1.0 if mid in bm25_ids else 0.0
+    # 2. BM25 score (continuous, 0.0 = not in BM25 results, 1.0 = best match)
+    bm25_score = bm25_scores.get(mid, 0.0)
 
-    # 3. Graph hit (binary)
-    graph_hit = 1.0 if mid in graph_ids else 0.0
+    # 3. Graph score (continuous, 0.0 = no graph hit, 0.4-1.0 = entity density)
+    graph_score = graph_scores.get(mid, 0.0)
 
     # 4. Importance (already 0-1)
     importance = float(mem.get("importance") or 0.5)
@@ -264,15 +277,52 @@ def extract_features(
     # 8. RRF rank (normalized)
     rrf_rank_norm = 1.0 / (1.0 + rrf_rank)
 
+    # === Session context features (9-12) ===
+    sf = session_features or {}
+
+    # 9. Query coherence: cosine similarity between current query and
+    #    previous query in this session. Measures topic continuity.
+    query_coherence = float(sf.get("query_coherence", 0.0))
+
+    # 10. Session retrieval depth: 1/(1+n) where n = retrievals so far.
+    #     First query = 1.0, later queries approach 0.
+    session_depth_norm = float(sf.get("session_depth_norm", 0.0))
+
+    # 11. Category session match: 1.0 if memory's category was already
+    #     useful in this session (appeared in previous results).
+    seen_categories = sf.get("seen_categories")
+    if seen_categories and mem.get("category") in seen_categories:
+        category_session_match = 1.0
+    else:
+        category_session_match = 0.0
+
+    # 12. Subject session overlap: fraction of memory's subject tokens
+    #     that overlap with subjects from previous session results.
+    seen_subjects = sf.get("seen_subjects")
+    if seen_subjects and mem.get("subject"):
+        mem_subject_tokens = set(mem["subject"].lower().split())
+        seen_subject_tokens = {s.lower() for s in seen_subjects}
+        if mem_subject_tokens:
+            overlap = len(mem_subject_tokens & seen_subject_tokens)
+            subject_session_overlap = min(overlap / len(mem_subject_tokens), 1.0)
+        else:
+            subject_session_overlap = 0.0
+    else:
+        subject_session_overlap = 0.0
+
     return [
         vector_similarity,
-        bm25_hit,
-        graph_hit,
+        bm25_score,
+        graph_score,
         importance,
         age_decay,
         ips_utility,
         category_code,
         rrf_rank_norm,
+        query_coherence,
+        session_depth_norm,
+        category_session_match,
+        subject_session_overlap,
     ]
 
 
@@ -286,8 +336,9 @@ def score(
     protected: set[str],
     now: datetime,
     vector_distances: dict[str, float],
-    bm25_ids: set[str],
-    graph_ids: set[str],
+    bm25_scores: dict[str, float],
+    graph_scores: dict[str, float],
+    session_features: Optional[dict] = None,
 ) -> Optional[tuple[list[dict], list[dict]]]:
     """
     Score candidates using the learned ranker.
@@ -307,7 +358,7 @@ def score(
     if config.learned_ranker_shadow_mode:
         # Shadow mode: score but don't use results
         if model is not None:
-            shadow_compare(model, candidates, protected, now, vector_distances, bm25_ids, graph_ids)
+            shadow_compare(model, candidates, protected, now, vector_distances, bm25_scores, graph_scores, session_features)
         return None
 
     if model is None:
@@ -317,7 +368,7 @@ def score(
     supplementary = []
 
     for rank, mem in enumerate(candidates):
-        features = extract_features(mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank)
+        features = extract_features(mem, vector_distances, bm25_scores, graph_scores, protected, now, rrf_rank=rank, session_features=session_features)
         x = [Value(f) for f in features]
         score_val = model.forward(x)
         mem["_imp_score"] = score_val.data
@@ -344,8 +395,9 @@ def shadow_compare(
     protected: set[str],
     now: datetime,
     vector_distances: dict[str, float],
-    bm25_ids: set[str],
-    graph_ids: set[str],
+    bm25_scores: dict[str, float],
+    graph_scores: dict[str, float],
+    session_features: Optional[dict] = None,
 ):
     """Log ranking disagreements between learned ranker and heuristic."""
     if not candidates:
@@ -355,7 +407,7 @@ def shadow_compare(
         # Get learned ranker ordering
         learned_scores = {}
         for rank, mem in enumerate(candidates):
-            features = extract_features(mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank)
+            features = extract_features(mem, vector_distances, bm25_scores, graph_scores, protected, now, rrf_rank=rank, session_features=session_features)
             x = [Value(f) for f in features]
             learned_scores[mem["id"]] = model.forward(x).data
 
@@ -424,10 +476,11 @@ def log_retrieval(
     candidates: list[dict],
     returned_ids: list[str],
     vector_distances: dict[str, float],
-    bm25_ids: set[str],
-    graph_ids: set[str],
+    bm25_scores: dict[str, float],
+    graph_scores: dict[str, float],
     protected: set[str],
     now: datetime,
+    session_features: Optional[dict] = None,
 ):
     """Log a retrieval event for training data collection. Best-effort."""
     try:
@@ -436,7 +489,7 @@ def log_retrieval(
         # Compute features for all candidates
         features = {}
         for rank, mem in enumerate(candidates):
-            feat = extract_features(mem, vector_distances, bm25_ids, graph_ids, protected, now, rrf_rank=rank)
+            feat = extract_features(mem, vector_distances, bm25_scores, graph_scores, protected, now, rrf_rank=rank, session_features=session_features)
             features[mem["id"]] = feat
 
         # Hash the query for grouping

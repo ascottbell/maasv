@@ -63,8 +63,8 @@ def _collect_signals(query: str, depth: int = 25) -> dict:
     Returns dict with:
         candidates: list[dict] — all unique memories from all signals
         vector_distances: dict[str, float]
-        bm25_ids: set[str]
-        graph_ids: set[str]
+        bm25_scores: dict[str, float] — normalized BM25 scores [0, 1]
+        graph_scores: dict[str, float] — graph density scores [0, 1]
     """
     from maasv.core.db import _db, get_query_embedding, serialize_embedding
     from maasv.core.retrieval import (
@@ -102,8 +102,10 @@ def _collect_signals(query: str, depth: int = 25) -> dict:
 
     # Build signal metadata
     vector_distances = {r["id"]: r["distance"] for r in vector_results}
-    bm25_ids = {r["id"] for r in bm25_results}
-    graph_ids = {r["id"] for r in graph_results}
+
+    from maasv.core.retrieval import _normalize_bm25_scores
+    bm25_scores = _normalize_bm25_scores(bm25_results)
+    graph_scores = {r["id"]: r.get("graph_score", 0.0) for r in graph_results}
 
     # RRF fusion to get unified candidate list
     signals = [s for s in [vector_results, bm25_results, graph_results] if s]
@@ -117,8 +119,8 @@ def _collect_signals(query: str, depth: int = 25) -> dict:
     return {
         "candidates": candidates,
         "vector_distances": vector_distances,
-        "bm25_ids": bm25_ids,
-        "graph_ids": graph_ids,
+        "bm25_scores": bm25_scores,
+        "graph_scores": graph_scores,
     }
 
 
@@ -155,8 +157,8 @@ def _build_training_entries(
         signals = _collect_signals(query_str, depth=25)
         candidates = signals["candidates"]
         vector_distances = signals["vector_distances"]
-        bm25_ids = signals["bm25_ids"]
-        graph_ids = signals["graph_ids"]
+        bm25_scores = signals["bm25_scores"]
+        graph_scores = signals["graph_scores"]
 
         if not candidates:
             continue
@@ -174,7 +176,7 @@ def _build_training_entries(
                 continue
 
             feat = extract_features(
-                mem, vector_distances, bm25_ids, graph_ids,
+                mem, vector_distances, bm25_scores, graph_scores,
                 protected, now, rrf_rank=rank,
             )
             features_dict[mid] = feat

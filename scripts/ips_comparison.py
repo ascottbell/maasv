@@ -72,13 +72,17 @@ def generate_data(
     for i in range(n_items):
         features = [
             rng.betavariate(2, 3),      # vector_similarity (varies per query, but base value)
-            1.0 if rng.random() < 0.35 else 0.0,  # bm25_hit
-            1.0 if rng.random() < 0.20 else 0.0,  # graph_hit
+            rng.betavariate(2, 5) if rng.random() < 0.35 else 0.0,  # bm25_score
+            rng.betavariate(3, 2) if rng.random() < 0.20 else 0.0,  # graph_score
             rng.betavariate(3, 3),      # importance
             rng.betavariate(5, 2),      # age_decay
             rng.betavariate(2, 3),      # ips_utility
             rng.random(),               # category_code
             0.5,                        # rrf_rank_norm (placeholder, set per query)
+            rng.betavariate(3, 3),      # query_coherence
+            rng.betavariate(2, 3),      # session_depth_norm
+            1.0 if rng.random() < 0.4 else 0.0,  # category_session_match
+            rng.betavariate(2, 5) if rng.random() < 0.3 else 0.0,  # subject_session_overlap
         ]
         items.append({"id": i, "base_features": features})
 
