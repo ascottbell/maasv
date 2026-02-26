@@ -90,7 +90,7 @@ app = FastAPI(
 
 # --- Register routers ---
 
-from maasv.server.routers import extraction, graph, health, memory, wisdom  # noqa: E402
+from maasv.server.routers import extraction, graph, health, ingest, memory, wisdom  # noqa: E402
 
 # Protected routers — auth enforced via dependency injection
 app.include_router(
@@ -115,6 +115,13 @@ app.include_router(
     wisdom.router,
     prefix="/v1/wisdom",
     tags=["wisdom"],
+    dependencies=[Depends(require_auth)],
+)
+
+app.include_router(
+    ingest.router,
+    prefix="/v1",
+    tags=["ingestion"],
     dependencies=[Depends(require_auth)],
 )
 

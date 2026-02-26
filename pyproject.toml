@@ -48,6 +48,9 @@ langchain = [
 all = [
     "maasv[server,mcp,anthropic,voyage,langchain]",
 ]
+ingestion = [
+    "pymupdf>=1.24",
+]
 reranking = [
     "sentence-transformers>=2.0.0",
     # NOTE: pulls in torch (~2GB). Only needed if cross_encoder_enabled=True.
@@ -62,6 +65,7 @@ dev = [
 [project.scripts]
 maasv-server = "maasv.server.main:run"
 maasv-mcp = "maasv.mcp_server.server:run"
+maasv-ingest = "maasv.ingestion.cli:main"
 
 [project.urls]
 Homepage = "https://maasv.com"
