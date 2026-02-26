@@ -242,8 +242,10 @@ class TestRankingModel:
 
         model = RankingModel()
         params = model.parameters()
-        # 12*16 (w1) + 16 (b1) + 1*16 (w2) + 1 (b2) = 225
-        assert len(params) == 225
+        # N_FEATURES*16 (w1) + 16 (b1) + 1*16 (w2) + 1 (b2)
+        from maasv.core.learned_ranker import HIDDEN_SIZE, N_FEATURES
+        expected = N_FEATURES * HIDDEN_SIZE + HIDDEN_SIZE + 1 * HIDDEN_SIZE + 1
+        assert len(params) == expected
 
     def test_forward(self):
         from maasv.core.autograd import Value
@@ -633,6 +635,8 @@ class TestTraining:
                         0.3,  # session_depth_norm
                         1.0 if i % 2 == 0 else 0.0,  # category_session_match
                         0.2 if i % 4 == 0 else 0.0,  # subject_session_overlap
+                        0.6 if i % 3 == 0 else 0.0,  # freshness_score
+                        1.0 / (1 + i) if i % 3 == 0 else 0.0,  # subject_freshness_rank
                     ]
                 }
                 # High-scoring features -> positive outcome

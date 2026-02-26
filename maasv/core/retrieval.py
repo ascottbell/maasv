@@ -119,12 +119,12 @@ def _compute_freshness_alpha(query: str) -> float:
         alpha += 1.0
 
     # Signal 2: Present-tense state query patterns.
-    # Reserved for future use — verb tense detection helps some queries but
-    # regresses others because moderate alpha (0.25-0.35) is in a "valley
-    # of pain": strong enough to swap bottom results but not strong enough
-    # to reorder the top. Needs a different mechanism than decay scaling.
+    # Disabled for decay scoring — any alpha between 0.25-0.70 either
+    # hurts NDCG or falls in "valley of pain" (disrupts good orderings
+    # without fixing bad ones). State patterns ARE used to gate the
+    # freshness RRF signal via _has_temporal_intent() instead.
     # if any(pat.search(query) for pat in _STATE_QUERY_PATTERNS):
-    #     alpha += 0.35
+    #     alpha += 0.45
 
     return min(alpha, 1.0)
 
@@ -829,6 +829,62 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
     return fts_results
 
 
+def _has_temporal_intent(query: str) -> bool:
+    """
+    Detect whether a query has temporal intent (wants recent information).
+
+    Combines explicit temporal keywords ("currently", "now", "latest") with
+    state-query patterns ("What X does Y use?"). Used to gate the freshness
+    signal — only fire on queries that actually want recent answers.
+    """
+    if _TEMPORAL_KEYWORDS_RE.search(query):
+        return True
+    if any(pat.search(query) for pat in _STATE_QUERY_PATTERNS):
+        return True
+    return False
+
+
+def _build_freshness_from_overlap(
+    vector_results: list[dict],
+    bm25_results: list[dict],
+    limit: int = 50,
+) -> list[dict]:
+    """
+    Build the freshness signal from the intersection of vector and BM25 results.
+
+    A memory that appears in BOTH vector (semantic match) and BM25 (keyword match)
+    is strongly topically relevant. Sorting this intersection by date gives us
+    "the most recent memories about THIS SPECIFIC TOPIC" — exactly what temporal
+    queries need.
+
+    Freshness_score = normalized vector distance (closer = higher score), so
+    downstream scoring can use it as a relevance-weighted freshness measure.
+
+    Returns dicts sorted by created_at DESC with 'freshness_score' field.
+    """
+    if not vector_results or not bm25_results:
+        return []
+
+    bm25_ids = {r["id"] for r in bm25_results}
+    overlap = [r for r in vector_results if r["id"] in bm25_ids]
+
+    if not overlap:
+        return []
+
+    # Score by vector distance (normalized: best = 1.0, worst = 0.0)
+    distances = [r.get("distance", 999.0) for r in overlap]
+    min_d = min(distances)
+    max_d = max(distances)
+    d_range = max_d - min_d if max_d > min_d else 1.0
+    for r in overlap:
+        r["freshness_score"] = 1.0 - ((r.get("distance", 999.0) - min_d) / d_range)
+
+    # Sort by date (newest first) — this is the ranking for RRF
+    overlap.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+
+    return overlap[:limit]
+
+
 def _reciprocal_rank_fusion(
     ranked_lists: list[list[dict]],
     k: int = 60,
@@ -1039,11 +1095,23 @@ def find_similar_memories(
         else:
             graph_results = _find_memories_by_graph(db, query, limit=RETRIEVAL_DEPTH)
 
+        # === Signal 5: Subject freshness (temporal queries only) ===
+        # Intersection of vector + BM25 results, sorted by date. A memory in
+        # both pools is topically relevant; date-sorting gives us "most recent
+        # about this topic." Only fires for temporal-intent queries to avoid
+        # injecting recency noise into non-temporal results.
+        if _sufficiency_met or not config.subject_freshness_signal or not _has_temporal_intent(query):
+            freshness_results = []
+        else:
+            freshness_results = _build_freshness_from_overlap(
+                vector_results, bm25_results, limit=RETRIEVAL_DEPTH,
+            )
+
         # === Signal 4: Recency (sort all candidates by date, newest first) ===
         if config.recency_signal:
-            # Pool all unique candidates from other signals, sort by created_at DESC
+            # Pool all unique candidates from ALL other signals, sort by created_at DESC
             recency_pool: dict[str, dict] = {}
-            for signal_results in (vector_results, bm25_results, graph_results):
+            for signal_results in (vector_results, bm25_results, graph_results, freshness_results):
                 for r in signal_results:
                     if r["id"] not in recency_pool:
                         recency_pool[r["id"]] = r
@@ -1061,6 +1129,7 @@ def find_similar_memories(
             (bm25_results, config.rrf_k_bm25),
             (graph_results, config.rrf_k_graph),
             (recency_results, config.rrf_k_recency),
+            (freshness_results, config.rrf_k_freshness),
         ]
         # Only include non-empty signals, keeping k values aligned
         active_pairs = [(s, k) for s, k in signals_with_k if s]
@@ -1090,6 +1159,7 @@ def find_similar_memories(
         vector_distances = {r["id"]: r["distance"] for r in vector_results}
         bm25_scores = _normalize_bm25_scores(bm25_results)
         graph_scores = {r["id"]: r.get("graph_score", 0.0) for r in graph_results}
+        freshness_scores = {r["id"]: r.get("freshness_score", 0.0) for r in freshness_results}
 
         # === Compute freshness alpha (query-level temporal sensitivity) ===
         freshness_alpha = _compute_freshness_alpha(query)
@@ -1114,7 +1184,11 @@ def find_similar_memories(
             # Try learned ranker first; falls back to heuristic formula.
             from maasv.core.learned_ranker import score as learned_score
 
-            lr_result = learned_score(candidates, protected, now, vector_distances, bm25_scores, graph_scores, session_features=session_features)
+            lr_result = learned_score(
+                candidates, protected, now, vector_distances, bm25_scores,
+                graph_scores, session_features=session_features,
+                freshness_scores=freshness_scores,
+            )
             if lr_result is not None:
                 primary, supplementary = lr_result
             else:
@@ -1267,6 +1341,7 @@ def find_similar_memories(
                 protected=protected,
                 now=now,
                 session_features=session_features,
+                freshness_scores=freshness_scores,
             )
         except Exception:
             pass

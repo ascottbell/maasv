@@ -37,6 +37,9 @@ FEATURE_NAMES = [
     "session_depth_norm",
     "category_session_match",
     "subject_session_overlap",
+    # Temporal/freshness features
+    "freshness_score",
+    "subject_freshness_rank",
 ]
 
 N_FEATURES = len(FEATURE_NAMES)
@@ -221,12 +224,15 @@ def extract_features(
     now: datetime,
     rrf_rank: int = 0,
     session_features: Optional[dict] = None,
+    freshness_scores: Optional[dict[str, float]] = None,
+    freshness_rank: int = -1,
 ) -> list[float]:
     """
-    Extract 12 normalized features for a single memory candidate.
+    Extract 14 normalized features for a single memory candidate.
 
     Features 1-8 are retrieval signals. Features 9-12 are session context
-    (all 0.0 when no session_features provided).
+    (all 0.0 when no session_features provided). Features 13-14 are
+    temporal/freshness signals from the subject freshness retrieval signal.
 
     All features normalized to [0, 1].
     """
@@ -313,6 +319,21 @@ def extract_features(
     else:
         subject_session_overlap = 0.0
 
+    # === Temporal/freshness features (13-14) ===
+
+    # 13. Freshness score: entity density from subject freshness signal.
+    #     0.0 = not found by freshness signal. 0.4-1.0 = entity match density.
+    _freshness_scores = freshness_scores or {}
+    freshness_score_val = _freshness_scores.get(mid, 0.0)
+
+    # 14. Subject freshness rank: position in the freshness signal list.
+    #     1.0 = top of freshness results (newest matching subject).
+    #     0.0 = not found by freshness signal.
+    if freshness_rank >= 0:
+        subject_freshness_rank = 1.0 / (1.0 + freshness_rank)
+    else:
+        subject_freshness_rank = 0.0
+
     return [
         vector_similarity,
         bm25_score,
@@ -326,6 +347,8 @@ def extract_features(
         session_depth_norm,
         category_session_match,
         subject_session_overlap,
+        freshness_score_val,
+        subject_freshness_rank,
     ]
 
 
@@ -342,6 +365,7 @@ def score(
     bm25_scores: dict[str, float],
     graph_scores: dict[str, float],
     session_features: Optional[dict] = None,
+    freshness_scores: Optional[dict[str, float]] = None,
 ) -> Optional[tuple[list[dict], list[dict]]]:
     """
     Score candidates using the learned ranker.
@@ -361,17 +385,26 @@ def score(
     if config.learned_ranker_shadow_mode:
         # Shadow mode: score but don't use results
         if model is not None:
-            shadow_compare(model, candidates, protected, now, vector_distances, bm25_scores, graph_scores, session_features)
+            shadow_compare(model, candidates, protected, now, vector_distances, bm25_scores, graph_scores, session_features, freshness_scores)
         return None
 
     if model is None:
         return None
 
+    # Build freshness rank lookup
+    _fr_scores = freshness_scores or {}
+    freshness_rank_map = _build_freshness_rank_map(candidates, _fr_scores)
+
     primary = []
     supplementary = []
 
     for rank, mem in enumerate(candidates):
-        features = extract_features(mem, vector_distances, bm25_scores, graph_scores, protected, now, rrf_rank=rank, session_features=session_features)
+        fr = freshness_rank_map.get(mem["id"], -1)
+        features = extract_features(
+            mem, vector_distances, bm25_scores, graph_scores, protected, now,
+            rrf_rank=rank, session_features=session_features,
+            freshness_scores=freshness_scores, freshness_rank=fr,
+        )
         x = [Value(f) for f in features]
         score_val = model.forward(x)
         mem["_imp_score"] = score_val.data
@@ -385,6 +418,22 @@ def score(
     supplementary.sort(key=lambda m: m["_imp_score"], reverse=True)
 
     return primary, supplementary
+
+
+def _build_freshness_rank_map(
+    candidates: list[dict],
+    freshness_scores: dict[str, float],
+) -> dict[str, int]:
+    """Build a map of memory_id -> rank in the freshness signal (0-indexed).
+
+    Candidates with freshness_score are sorted by score descending to
+    approximate their position in the freshness signal's ranked list.
+    Returns -1 for candidates not in the freshness signal.
+    """
+    scored = [(c["id"], freshness_scores.get(c["id"], 0.0)) for c in candidates]
+    scored = [(mid, s) for mid, s in scored if s > 0]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return {mid: rank for rank, (mid, _) in enumerate(scored)}
 
 
 # ============================================================================
@@ -401,16 +450,25 @@ def shadow_compare(
     bm25_scores: dict[str, float],
     graph_scores: dict[str, float],
     session_features: Optional[dict] = None,
+    freshness_scores: Optional[dict[str, float]] = None,
 ):
     """Log ranking disagreements between learned ranker and heuristic."""
     if not candidates:
         return
 
     try:
+        _fr_scores = freshness_scores or {}
+        freshness_rank_map = _build_freshness_rank_map(candidates, _fr_scores)
+
         # Get learned ranker ordering
         learned_scores = {}
         for rank, mem in enumerate(candidates):
-            features = extract_features(mem, vector_distances, bm25_scores, graph_scores, protected, now, rrf_rank=rank, session_features=session_features)
+            fr = freshness_rank_map.get(mem["id"], -1)
+            features = extract_features(
+                mem, vector_distances, bm25_scores, graph_scores, protected, now,
+                rrf_rank=rank, session_features=session_features,
+                freshness_scores=freshness_scores, freshness_rank=fr,
+            )
             x = [Value(f) for f in features]
             learned_scores[mem["id"]] = model.forward(x).data
 
@@ -484,15 +542,24 @@ def log_retrieval(
     protected: set[str],
     now: datetime,
     session_features: Optional[dict] = None,
+    freshness_scores: Optional[dict[str, float]] = None,
 ):
     """Log a retrieval event for training data collection. Best-effort."""
     try:
         from maasv.core.db import _db, _record_surfacing
 
+        _fr_scores = freshness_scores or {}
+        freshness_rank_map = _build_freshness_rank_map(candidates, _fr_scores)
+
         # Compute features for all candidates
         features = {}
         for rank, mem in enumerate(candidates):
-            feat = extract_features(mem, vector_distances, bm25_scores, graph_scores, protected, now, rrf_rank=rank, session_features=session_features)
+            fr = freshness_rank_map.get(mem["id"], -1)
+            feat = extract_features(
+                mem, vector_distances, bm25_scores, graph_scores, protected, now,
+                rrf_rank=rank, session_features=session_features,
+                freshness_scores=freshness_scores, freshness_rank=fr,
+            )
             features[mem["id"]] = feat
 
         # Hash the query for grouping

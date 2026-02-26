@@ -53,7 +53,9 @@ class MaasvConfig:
     rrf_k_bm25: int = 60  # RRF k for BM25 signal
     rrf_k_graph: int = 30  # RRF k for graph signal (lower = more top-heavy)
     rrf_k_recency: int = 20  # RRF k for recency signal (lower = more top-heavy)
+    rrf_k_freshness: int = 15  # RRF k for subject freshness signal (lower = more top-heavy)
     recency_signal: bool = True  # Include recency-sorted candidates as 4th RRF signal
+    subject_freshness_signal: bool = True  # Include subject-freshness as 5th RRF signal
     decay_half_life_days: int = 30  # Days for decay to reach 0.5 (shorter = stronger recency)
     # Per-category decay half-lives (days). Categories not listed use decay_half_life_days.
     # Derived from supersession density analysis: volatile categories get shorter half-lives.
