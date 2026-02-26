@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     # Auth
     api_key: str = ""  # empty = no auth required
+    require_auth: bool = False  # when True, refuse to start if api_key is empty
 
     # maasv database
     db_path: str = "maasv.db"
@@ -48,7 +49,7 @@ class Settings(BaseSettings):
     similarity_threshold: float = 0.95
     cross_encoder_enabled: bool = False
 
-    model_config = {"env_prefix": "MAASV_", "env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_prefix": "MAASV_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @property
     def db_path_resolved(self) -> Path:

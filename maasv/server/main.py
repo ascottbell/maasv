@@ -124,7 +124,13 @@ app.include_router(health.router, prefix="/v1", tags=["health"])
 
 def run():
     """Entry point for `maasv-server` CLI command."""
+    import sys
+
     import uvicorn
+
+    if settings.require_auth and not settings.api_key:
+        logger.fatal("MAASV_REQUIRE_AUTH is set but MAASV_API_KEY is empty — refusing to start")
+        sys.exit(1)
 
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),

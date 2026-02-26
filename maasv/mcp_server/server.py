@@ -997,6 +997,13 @@ def run() -> None:
 
         starlette_app = mcp.streamable_http_app()
 
+        from starlette.routing import Route
+
+        async def health_check(request):
+            return JSONResponse({"status": "healthy"})
+
+        starlette_app.routes.append(Route("/health", health_check))
+
         auth_token = settings.auth_token
 
         class APIKeyMiddleware(BaseHTTPMiddleware):

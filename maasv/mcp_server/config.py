@@ -47,7 +47,7 @@ class MCPSettings(BaseSettings):
     similarity_threshold: float = 0.95
     cross_encoder_enabled: bool = False
 
-    model_config = {"env_prefix": "MAASV_", "env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_prefix": "MAASV_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @property
     def protected_categories_set(self) -> set[str]:
