@@ -51,8 +51,8 @@ class MaasvConfig:
     graph_slot_injection: bool = False  # Force-inject a graph result into last slot
     rrf_k_vector: int = 60  # RRF k for vector signal (higher = less top-heavy)
     rrf_k_bm25: int = 60  # RRF k for BM25 signal
-    rrf_k_graph: int = 60  # RRF k for graph signal
-    rrf_k_recency: int = 60  # RRF k for recency signal
+    rrf_k_graph: int = 30  # RRF k for graph signal (lower = more top-heavy)
+    rrf_k_recency: int = 20  # RRF k for recency signal (lower = more top-heavy)
     recency_signal: bool = True  # Include recency-sorted candidates as 4th RRF signal
     decay_half_life_days: int = 30  # Days for decay to reach 0.5 (shorter = stronger recency)
     sufficiency_threshold: float = 0.0  # L2 distance threshold for early exit (0.0 = disabled)

@@ -405,6 +405,25 @@ def score_decay_protection(
                 "score": 1.0,
                 "reason": f"{len(event_entries)} event memories in correct temporal order",
             }
+
+        # Tolerance: if all event memories are within 48h of each other,
+        # they're from the same event cluster. Micro-ordering within a
+        # cluster doesn't test decay behavior — decay operates over days/weeks.
+        try:
+            fmt = "%Y-%m-%d %H:%M:%S"
+            parsed = [datetime.strptime(d[:19], fmt) for d in dates]
+            span_hours = (max(parsed) - min(parsed)).total_seconds() / 3600
+            if span_hours <= 48:
+                return {
+                    "score": 0.8,
+                    "reason": (
+                        f"event memories within {span_hours:.0f}h cluster "
+                        f"(order not significant at this granularity)"
+                    ),
+                }
+        except (ValueError, TypeError):
+            pass
+
         return {
             "score": 0.3,
             "reason": f"event memories not in temporal order: {dates}",

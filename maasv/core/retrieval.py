@@ -76,6 +76,13 @@ def _normalize_bm25_scores(bm25_results: list[dict]) -> dict[str, float]:
     return {k: v / max_val for k, v in negated.items()}
 
 
+# Keywords that signal temporal intent — trigger stronger recency preference
+_TEMPORAL_KEYWORDS = frozenset({
+    "currently", "current", "now", "latest", "recent", "recently",
+    "today", "right now", "at the moment",
+})
+
+
 def _importance_score(
     candidates: list[dict],
     protected: set[str],
@@ -83,17 +90,28 @@ def _importance_score(
     vector_distances: dict[str, float],
     bm25_scores: dict[str, float],
     graph_scores: dict[str, float],
+    query: str = "",
+    session_features: Optional[dict] = None,
 ) -> tuple[list[dict], list[dict]]:
     """
     Score candidates by importance-weighted formula. Separates into primary
     (have vector distance) and supplementary (no vector distance) lists,
     both sorted by _imp_score descending.
 
-    Scoring: (1 - distance) + 0.05 * importance * decay * ips_utility
-             + agreement_bonus + access_frequency_bonus
+    Uses multiplicative decay (recency scales with relevance) and optional
+    session context boosting for coherent multi-query sessions.
     """
     primary = []
     supplementary = []
+
+    # Detect temporal intent in query
+    query_lower = query.lower()
+    temporal_query = any(kw in query_lower for kw in _TEMPORAL_KEYWORDS)
+
+    # Session context for coherence boosting
+    sf = session_features or {}
+    seen_categories = sf.get("seen_categories") or set()
+    seen_subjects = sf.get("seen_subjects") or set()
 
     for mem in candidates:
         importance = mem.get("importance") or 0.5
@@ -112,15 +130,10 @@ def _importance_score(
                 days_old = 0
             import maasv as _maasv
             half_life = _maasv.get_config().decay_half_life_days
-            # Convert half-life to exponential decay constant:
-            # exp(-days / tau) = 0.5 when days = half_life
-            # => tau = half_life / ln(2)
             tau = half_life / math.log(2)
             decay_factor = math.exp(-days_old / tau)
 
         # IPS utility: access_count/surfacing_count measures conversion rate.
-        # High ratio = surfaced rarely but used often = genuinely useful.
-        # Cold-start fallback uses the old capped formula.
         if surfacing_count > 0:
             ips_utility = math.log(2 + access_count / surfacing_count)
         else:
@@ -132,19 +145,49 @@ def _importance_score(
         distance = vector_distances.get(mem["id"])
 
         if distance is not None:
-            # Vector similarity is the primary signal. Decay is a meaningful
-            # secondary signal — among semantically similar candidates, prefer
-            # recent ones. A 0.1 weight means a fully-decayed memory (decay=0)
-            # loses 0.1 vs a brand-new one (decay=1), enough to reorder
-            # candidates within typical vector similarity clusters (~0.05 spread).
             vector_sim = 1.0 - distance
-            recency_bonus = 0.1 * decay_factor
+
+            # Multiplicative decay: recency scales with relevance instead of
+            # being a small additive constant that gets drowned by vector_sim.
+            # Temporal queries get a much stronger recency effect so that even
+            # small age differences dominate over vector_sim gaps:
+            #   temporal: 0.1 + 0.9*decay → 90% penalty for ancient memories
+            #   normal:   0.7 + 0.3*decay → 30% penalty for ancient memories
+            if temporal_query:
+                decay_multiplier = 0.1 + 0.9 * decay_factor
+            else:
+                decay_multiplier = 0.7 + 0.3 * decay_factor
+
+            base_score = vector_sim * decay_multiplier
             metadata_bonus = 0.03 * importance * ips_utility
-            # Continuous agreement bonus: weighted by actual signal strength
             bm25_val = bm25_scores.get(mem["id"], 0.0)
             graph_val = graph_scores.get(mem["id"], 0.0)
-            agreement_bonus = 0.03 * bm25_val + 0.03 * graph_val
-            mem["_imp_score"] = vector_sim + recency_bonus + metadata_bonus + agreement_bonus + freq_bonus
+            # For temporal queries, reduce graph bonus to avoid old graph-connected
+            # memories competing with recent ones. For other queries, graph gets
+            # a meaningful boost to improve cross-domain coverage.
+            graph_weight = 0.03 if temporal_query else 0.08
+            agreement_bonus = 0.03 * bm25_val + graph_weight * graph_val
+
+            # Session coherence bonus: prefer candidates matching the session's
+            # established topic (categories and subjects from prior queries).
+            session_bonus = 0.0
+            if seen_categories and mem.get("category") in seen_categories:
+                session_bonus += 0.05
+            if seen_subjects and mem.get("subject"):
+                mem_subject_tokens = set(mem["subject"].lower().split())
+                if mem_subject_tokens:
+                    overlap = len(mem_subject_tokens & seen_subjects)
+                    session_bonus += 0.05 * min(overlap / len(mem_subject_tokens), 1.0)
+
+            # Tiny epoch tiebreaker: among candidates with near-identical scores,
+            # prefer newer ones. ~1e-6 magnitude — only breaks ties, never
+            # overrides meaningful score differences.
+            try:
+                epoch_tiebreak = datetime.fromisoformat(mem["created_at"].replace("Z", "+00:00")).timestamp() * 1e-15
+            except (ValueError, TypeError, KeyError, AttributeError):
+                epoch_tiebreak = 0.0
+
+            mem["_imp_score"] = base_score + metadata_bonus + agreement_bonus + freq_bonus + session_bonus + epoch_tiebreak
             primary.append(mem)
         else:
             mem["_imp_score"] = importance * decay_factor * ips_utility * 0.0001 + freq_bonus
@@ -449,8 +492,13 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
     # Only collect EXPANDED entity names (from related entities, not the query matches)
     # Cardinality filtering: skip high-cardinality entities (hubs like "Python"
     # that connect to hundreds of memories and dilute results).
+    # Hub entities that are connected to MULTIPLE direct entities are included
+    # with reduced score — they represent shared context (e.g., "Python" shared
+    # by both Doris and maasv).
     MAX_ENTITY_RELATIONSHIPS = 50  # entities with more are hub noise
     expanded_entity_names = set()
+    hub_entity_names = set()  # hubs connected to 2+ direct entities
+    hop1_entity_ids = set()  # for potential 2-hop expansion
     if direct_entity_ids:
         placeholders = ",".join("?" * len(direct_entity_ids))
         try:
@@ -460,7 +508,14 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     e.id, e.name,
                     (SELECT COUNT(*) FROM relationships r2
                      WHERE (r2.subject_id = e.id OR r2.object_id = e.id)
-                     AND r2.valid_to IS NULL) as rel_count
+                     AND r2.valid_to IS NULL) as rel_count,
+                    (SELECT COUNT(DISTINCT CASE
+                        WHEN r3.subject_id IN ({placeholders}) THEN r3.subject_id
+                        WHEN r3.object_id IN ({placeholders}) THEN r3.object_id
+                     END)
+                     FROM relationships r3
+                     WHERE (r3.subject_id = e.id OR r3.object_id = e.id)
+                     AND r3.valid_to IS NULL) as direct_connections
                 FROM relationships r
                 JOIN entities e ON (
                     CASE
@@ -472,19 +527,55 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                 AND r.valid_to IS NULL
                 LIMIT 30
             """,
-                list(direct_entity_ids) * 3,
+                list(direct_entity_ids) * 5,
             ).fetchall()
 
             for row in related_rows:
                 if row["name"] and row["name"] not in direct_entity_names:
-                    # Cardinality filter: skip hub entities
+                    hop1_entity_ids.add(row["id"])
                     if row["rel_count"] <= MAX_ENTITY_RELATIONSHIPS:
                         expanded_entity_names.add(row["name"])
+                    elif row["direct_connections"] >= 2:
+                        # Hub entity connected to 2+ query entities = shared context
+                        hub_entity_names.add(row["name"])
         except Exception:
             logger.debug("1-hop expansion failed", exc_info=True)
 
-    # Combine both sets for different search strategies
-    all_entity_names = direct_entity_names | expanded_entity_names
+    # Step 2b: 2-hop expansion when 1-hop yields few entities
+    # This helps aggregation queries like "what do X and Y share?"
+    if len(expanded_entity_names) < 3 and hop1_entity_ids:
+        hop1_ids = list(hop1_entity_ids - direct_entity_ids)[:10]
+        if hop1_ids:
+            ph2 = ",".join("?" * len(hop1_ids))
+            try:
+                hop2_rows = db.execute(
+                    f"""
+                    SELECT DISTINCT e.id, e.name,
+                        (SELECT COUNT(*) FROM relationships r2
+                         WHERE (r2.subject_id = e.id OR r2.object_id = e.id)
+                         AND r2.valid_to IS NULL) as rel_count
+                    FROM relationships r
+                    JOIN entities e ON (
+                        CASE WHEN r.subject_id IN ({ph2}) THEN r.object_id
+                             ELSE r.subject_id END
+                    ) = e.id
+                    WHERE (r.subject_id IN ({ph2}) OR r.object_id IN ({ph2}))
+                    AND r.valid_to IS NULL
+                    LIMIT 20
+                """,
+                    hop1_ids * 3,
+                ).fetchall()
+                for row in hop2_rows:
+                    if (row["name"]
+                        and row["name"] not in direct_entity_names
+                        and row["name"] not in expanded_entity_names
+                        and row["rel_count"] <= MAX_ENTITY_RELATIONSHIPS):
+                        expanded_entity_names.add(row["name"])
+            except Exception:
+                logger.debug("2-hop expansion failed", exc_info=True)
+
+    # Combine all entity name sets for search strategies
+    all_entity_names = direct_entity_names | expanded_entity_names | hub_entity_names
 
     if not all_entity_names:
         return []
@@ -538,7 +629,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                     JOIN memories m ON f.rowid = m.rowid
                     WHERE memories_fts MATCH ?
                     AND m.superseded_by IS NULL
-                    LIMIT 3
+                    LIMIT 5
                 """,
                     (fts_query_with_context,),
                 ).fetchall()
@@ -555,7 +646,7 @@ def _find_memories_by_graph(db, query: str, limit: int = 50) -> list[dict]:
                         JOIN memories m ON f.rowid = m.rowid
                         WHERE memories_fts MATCH ?
                         AND m.superseded_by IS NULL
-                        LIMIT 3
+                        LIMIT 5
                     """,
                         (fts_query,),
                     ).fetchall()
@@ -827,7 +918,7 @@ def find_similar_memories(
     # fusion benefits from broader candidate pools — BM25 and graph may surface
     # relevant results at deeper ranks. Cap keeps total candidates manageable
     # (~50-75 unique after RRF dedup).
-    RETRIEVAL_DEPTH = max(limit * 5, 25)
+    RETRIEVAL_DEPTH = max(limit * 10, 50)
 
     import maasv
 
@@ -958,7 +1049,8 @@ def find_similar_memories(
             # signals already found great matches. Use heuristic scoring only.
             ce_scores = None
             primary, supplementary = _importance_score(
-                candidates, protected, now, vector_distances, bm25_scores, graph_scores
+                candidates, protected, now, vector_distances, bm25_scores, graph_scores,
+                query=query, session_features=session_features,
             )
         else:
             # Try cross-encoder first (best quality). Falls back to importance-weighted
@@ -976,7 +1068,8 @@ def find_similar_memories(
                 primary, supplementary = lr_result
             else:
                 primary, supplementary = _importance_score(
-                    candidates, protected, now, vector_distances, bm25_scores, graph_scores
+                    candidates, protected, now, vector_distances, bm25_scores, graph_scores,
+                    query=query, session_features=session_features,
                 )
 
         if ce_scores is not None:
