@@ -986,8 +986,27 @@ def run() -> None:
     logger.info("Transport: %s", settings.transport)
 
     if settings.transport == "http":
-        if not settings.auth_token:
-            print("[maasv-mcp] ERROR: MAASV_AUTH_TOKEN required for HTTP transport", file=sys.stderr)
+        # Validate auth config: need at least one method, no half-set CF config
+        has_api_key = bool(settings.auth_token)
+        cf_team_set = bool(settings.cf_team)
+        cf_aud_set = bool(settings.cf_aud)
+
+        if cf_team_set != cf_aud_set:
+            print(
+                "[maasv-mcp] ERROR: CF Access config is incomplete — "
+                "both MAASV_CF_TEAM and MAASV_CF_AUD must be set (or both empty)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        has_cf = settings.cf_enabled
+
+        if not has_api_key and not has_cf:
+            print(
+                "[maasv-mcp] ERROR: No auth configured for HTTP transport. "
+                "Set MAASV_AUTH_TOKEN (API key) and/or MAASV_CF_TEAM + MAASV_CF_AUD (CF Access JWT).",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         import hmac
@@ -1004,21 +1023,55 @@ def run() -> None:
 
         starlette_app.routes.append(Route("/health", health_check))
 
+        # Initialize CF JWT validator if configured
+        cf_validator = None
+        if has_cf:
+            from maasv.mcp_server.cf_auth import CFAccessValidator
+
+            cf_validator = CFAccessValidator(team=settings.cf_team, audience=settings.cf_aud)
+
         auth_token = settings.auth_token
 
-        class APIKeyMiddleware(BaseHTTPMiddleware):
+        class AuthMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
+                # Health check — always open
                 if request.url.path == "/health":
                     return await call_next(request)
-                provided_key = request.headers.get("X-API-Key") or ""
-                if not hmac.compare_digest(provided_key, auth_token):
-                    return JSONResponse({"error": "Invalid or missing API key"}, status_code=401)
-                return await call_next(request)
 
-        starlette_app.add_middleware(APIKeyMiddleware)
+                # Try API key first (existing clients: Doris, scripts)
+                api_key = request.headers.get("X-API-Key") or ""
+                if api_key:
+                    if auth_token and hmac.compare_digest(api_key, auth_token):
+                        return await call_next(request)
+                    return JSONResponse({"error": "Invalid API key"}, status_code=401)
+
+                # Try CF Access JWT (portal clients: ChatGPT)
+                cf_jwt = request.headers.get("Cf-Access-Jwt-Assertion") or ""
+                if cf_jwt:
+                    if cf_validator is None:
+                        return JSONResponse(
+                            {"error": "CF Access JWT auth not configured on this server"},
+                            status_code=401,
+                        )
+                    try:
+                        cf_validator.validate(cf_jwt)
+                        return await call_next(request)
+                    except Exception as e:
+                        logger.warning("CF JWT validation failed: %s", e)
+                        return JSONResponse({"error": f"Invalid CF Access token: {e}"}, status_code=401)
+
+                # No auth header provided
+                return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+        starlette_app.add_middleware(AuthMiddleware)
 
         logger.info("Host: %s:%d", settings.host, settings.port)
-        logger.info("Auth: enabled (X-API-Key header)")
+        auth_methods = []
+        if has_api_key:
+            auth_methods.append("API key (X-API-Key)")
+        if has_cf:
+            auth_methods.append(f"CF Access JWT (team: {settings.cf_team})")
+        logger.info("Auth methods: %s", ", ".join(auth_methods))
 
         import anyio
         import uvicorn

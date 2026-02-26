@@ -41,6 +41,10 @@ class MCPSettings(BaseSettings):
     embed_model: str = "qwen3-embedding:8b"
     embed_base_url: str = "http://localhost:11434"
 
+    # Cloudflare Access JWT auth (for MCP Server Portals / ChatGPT)
+    cf_team: str = ""  # CF Zero Trust team name
+    cf_aud: str = ""  # CF Access application audience tag
+
     # maasv tuning
     protected_categories: str = "identity,family"  # comma-separated
     stale_days: int = 30
@@ -48,6 +52,18 @@ class MCPSettings(BaseSettings):
     cross_encoder_enabled: bool = False
 
     model_config = {"env_prefix": "MAASV_", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @property
+    def cf_jwks_url(self) -> str:
+        return f"https://{self.cf_team}.cloudflareaccess.com/cdn-cgi/access/certs"
+
+    @property
+    def cf_issuer(self) -> str:
+        return f"https://{self.cf_team}.cloudflareaccess.com"
+
+    @property
+    def cf_enabled(self) -> bool:
+        return bool(self.cf_team and self.cf_aud)
 
     @property
     def protected_categories_set(self) -> set[str]:
