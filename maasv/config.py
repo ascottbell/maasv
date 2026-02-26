@@ -55,6 +55,16 @@ class MaasvConfig:
     rrf_k_recency: int = 20  # RRF k for recency signal (lower = more top-heavy)
     recency_signal: bool = True  # Include recency-sorted candidates as 4th RRF signal
     decay_half_life_days: int = 30  # Days for decay to reach 0.5 (shorter = stronger recency)
+    # Per-category decay half-lives (days). Categories not listed use decay_half_life_days.
+    # Derived from supersession density analysis: volatile categories get shorter half-lives.
+    category_half_life_days: dict[str, int] = field(default_factory=lambda: {
+        "event": 10,        # 47.5% supersession rate — time-bound, decay fast
+        "reminder": 10,     # 62.0% supersession rate — time-bound
+        "behavior": 15,     # 59.4% supersession rate — patterns change
+        "decision": 15,     # Low supersession but high relevance of latest decision
+        "project": 20,      # 26.5% supersession rate — config/state changes often
+        "learning": 25,     # 10.8% supersession rate — recent learnings slightly more relevant
+    })
     sufficiency_threshold: float = 0.0  # L2 distance threshold for early exit (0.0 = disabled)
     sufficiency_min_agreement: int = 2  # Min signals agreeing to trigger early exit
 

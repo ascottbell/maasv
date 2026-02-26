@@ -76,11 +76,57 @@ def _normalize_bm25_scores(bm25_results: list[dict]) -> dict[str, float]:
     return {k: v / max_val for k, v in negated.items()}
 
 
-# Keywords that signal temporal intent — trigger stronger recency preference
-_TEMPORAL_KEYWORDS = frozenset({
-    "currently", "current", "now", "latest", "recent", "recently",
-    "today", "right now", "at the moment",
-})
+# Keywords that signal temporal intent — trigger stronger recency preference.
+# Matched with word boundaries to avoid false positives (e.g. "now" in "knowledge").
+_TEMPORAL_KEYWORDS_RE = re.compile(
+    r"\b(?:currently|current|now|latest|recent|recently|today|right now|at the moment)\b",
+    re.IGNORECASE,
+)
+
+
+# Patterns that signal present-tense state queries (implicit temporal intent).
+# These detect questions about the current configuration/state of a system.
+# Designed to catch "What does X use?" but NOT "What technologies do X share?"
+_STATE_QUERY_PATTERNS = [
+    # "What [noun phrase] does [subject] use/run/have?" — asking about current attribute.
+    # Allows 1-4 words between "what" and "does" to catch noun phrases like
+    # "What voice architecture does My Doris use?" while staying bounded.
+    # Uses "does" (singular), not "do" (plural/aggregation).
+    re.compile(r"\bwhat\s+(?:\w+\s+){1,4}does\s+\w+.*?\s+(?:use|run|have|produce|output|generate|store|serve|route|send)\b", re.IGNORECASE),
+    # "How often/frequently does X" — frequency state questions
+    re.compile(r"\bhow\s+(?:often|frequently)\s+does\b", re.IGNORECASE),
+]
+
+
+def _compute_freshness_alpha(query: str) -> float:
+    """
+    Compute continuous freshness sensitivity for a query.
+
+    Returns alpha in [0.0, 1.0] where:
+        0.0 = timeless query (no recency preference)
+        1.0 = strongly temporal (want the latest)
+
+    Signals:
+        1. Temporal keywords ("currently", "now", etc.) — strong signal
+        2. Present-tense state query patterns — moderate signal
+    """
+    alpha = 0.0
+
+    # Signal 1: Explicit temporal keywords (strong, word-boundary matched).
+    # Set to 1.0 to match the original temporal decay behavior exactly:
+    # alpha=1.0 → decay_multiplier = 0.1 + 0.9*decay (90% penalty for old).
+    if _TEMPORAL_KEYWORDS_RE.search(query):
+        alpha += 1.0
+
+    # Signal 2: Present-tense state query patterns.
+    # Reserved for future use — verb tense detection helps some queries but
+    # regresses others because moderate alpha (0.25-0.35) is in a "valley
+    # of pain": strong enough to swap bottom results but not strong enough
+    # to reorder the top. Needs a different mechanism than decay scaling.
+    # if any(pat.search(query) for pat in _STATE_QUERY_PATTERNS):
+    #     alpha += 0.35
+
+    return min(alpha, 1.0)
 
 
 def _importance_score(
@@ -92,26 +138,35 @@ def _importance_score(
     graph_scores: dict[str, float],
     query: str = "",
     session_features: Optional[dict] = None,
+    freshness_alpha: float = 0.0,
 ) -> tuple[list[dict], list[dict]]:
     """
     Score candidates by importance-weighted formula. Separates into primary
     (have vector distance) and supplementary (no vector distance) lists,
     both sorted by _imp_score descending.
 
-    Uses multiplicative decay (recency scales with relevance) and optional
-    session context boosting for coherent multi-query sessions.
+    Uses multiplicative decay with continuous freshness sensitivity (alpha)
+    and optional session context boosting.
     """
     primary = []
     supplementary = []
 
-    # Detect temporal intent in query
-    query_lower = query.lower()
-    temporal_query = any(kw in query_lower for kw in _TEMPORAL_KEYWORDS)
+    alpha = freshness_alpha
 
     # Session context for coherence boosting
     sf = session_features or {}
     seen_categories = sf.get("seen_categories") or set()
     seen_subjects = sf.get("seen_subjects") or set()
+
+    # Interpolate decay parameters from alpha:
+    #   alpha=0.0 → base=0.70, scale=0.30 (30% max penalty, gentle)
+    #   alpha=1.0 → base=0.10, scale=0.90 (90% max penalty, aggressive)
+    decay_base = 0.7 - 0.6 * alpha
+    decay_scale = 0.3 + 0.6 * alpha
+    # Graph weight: only reduce for high-alpha queries (keyword-matched).
+    # For moderate alpha (pattern-only), keep full graph weight since the
+    # temporal signal is subtle and graph-connected memories still help.
+    graph_weight = 0.08 if alpha < 0.5 else 0.03
 
     for mem in candidates:
         importance = mem.get("importance") or 0.5
@@ -147,25 +202,17 @@ def _importance_score(
         if distance is not None:
             vector_sim = 1.0 - distance
 
-            # Multiplicative decay: recency scales with relevance instead of
-            # being a small additive constant that gets drowned by vector_sim.
-            # Temporal queries get a much stronger recency effect so that even
-            # small age differences dominate over vector_sim gaps:
-            #   temporal: 0.1 + 0.9*decay → 90% penalty for ancient memories
-            #   normal:   0.7 + 0.3*decay → 30% penalty for ancient memories
-            if temporal_query:
-                decay_multiplier = 0.1 + 0.9 * decay_factor
-            else:
-                decay_multiplier = 0.7 + 0.3 * decay_factor
+            # Multiplicative decay: recency scales with relevance.
+            # Alpha controls how aggressive the decay is:
+            #   alpha=0.0: 0.70 + 0.30*decay → 30% max penalty (gentle)
+            #   alpha=0.3: 0.52 + 0.48*decay → 48% max penalty (moderate)
+            #   alpha=1.0: 0.10 + 0.90*decay → 90% max penalty (aggressive)
+            decay_multiplier = decay_base + decay_scale * decay_factor
 
             base_score = vector_sim * decay_multiplier
             metadata_bonus = 0.03 * importance * ips_utility
             bm25_val = bm25_scores.get(mem["id"], 0.0)
             graph_val = graph_scores.get(mem["id"], 0.0)
-            # For temporal queries, reduce graph bonus to avoid old graph-connected
-            # memories competing with recent ones. For other queries, graph gets
-            # a meaningful boost to improve cross-domain coverage.
-            graph_weight = 0.03 if temporal_query else 0.08
             agreement_bonus = 0.03 * bm25_val + graph_weight * graph_val
 
             # Session coherence bonus: prefer candidates matching the session's
@@ -1044,6 +1091,9 @@ def find_similar_memories(
         bm25_scores = _normalize_bm25_scores(bm25_results)
         graph_scores = {r["id"]: r.get("graph_score", 0.0) for r in graph_results}
 
+        # === Compute freshness alpha (query-level temporal sensitivity) ===
+        freshness_alpha = _compute_freshness_alpha(query)
+
         if _sufficiency_met:
             # Skip expensive cross-encoder and learned ranker — the cheap
             # signals already found great matches. Use heuristic scoring only.
@@ -1051,6 +1101,7 @@ def find_similar_memories(
             primary, supplementary = _importance_score(
                 candidates, protected, now, vector_distances, bm25_scores, graph_scores,
                 query=query, session_features=session_features,
+                freshness_alpha=freshness_alpha,
             )
         else:
             # Try cross-encoder first (best quality). Falls back to importance-weighted
@@ -1070,6 +1121,7 @@ def find_similar_memories(
                 primary, supplementary = _importance_score(
                     candidates, protected, now, vector_distances, bm25_scores, graph_scores,
                     query=query, session_features=session_features,
+                    freshness_alpha=freshness_alpha,
                 )
 
         if ce_scores is not None:
