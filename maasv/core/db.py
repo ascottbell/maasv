@@ -627,6 +627,136 @@ def init_db():
 
     run_migration(db, 10, "Shadow metrics table for graduation readiness", _migrate_shadow_metrics)
 
+    # --- Migration 11: Commitments table + entity event_time ---
+    def _migrate_commitments(db: sqlite3.Connection):
+        # Commitments table — first-class tracked promises, follow-ups, delegations
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS commitments (
+                id TEXT PRIMARY KEY,
+                commitment_type TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                deadline TEXT,
+                deadline_type TEXT NOT NULL DEFAULT 'none',
+                next_action TEXT DEFAULT '',
+                verification_rule TEXT DEFAULT '',
+                escalation_policy TEXT DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'conversation',
+                related_entity_ids TEXT,
+                context TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                event_time TEXT,
+                ingested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                metadata TEXT
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_commitments_status ON commitments(status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_commitments_owner ON commitments(owner)")
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_commitments_deadline
+            ON commitments(deadline) WHERE deadline IS NOT NULL
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_commitments_type ON commitments(commitment_type)")
+
+        # FTS for commitments
+        db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS commitments_fts USING fts5(
+                subject, context, next_action,
+                content='commitments', content_rowid='rowid'
+            )
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS commitments_ai AFTER INSERT ON commitments BEGIN
+                INSERT INTO commitments_fts(rowid, subject, context, next_action)
+                VALUES (NEW.rowid, NEW.subject, NEW.context, NEW.next_action);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS commitments_ad AFTER DELETE ON commitments BEGIN
+                INSERT INTO commitments_fts(commitments_fts, rowid, subject, context, next_action)
+                VALUES ('delete', OLD.rowid, OLD.subject, OLD.context, OLD.next_action);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS commitments_au AFTER UPDATE ON commitments BEGIN
+                INSERT INTO commitments_fts(commitments_fts, rowid, subject, context, next_action)
+                VALUES ('delete', OLD.rowid, OLD.subject, OLD.context, OLD.next_action);
+                INSERT INTO commitments_fts(rowid, subject, context, next_action)
+                VALUES (NEW.rowid, NEW.subject, NEW.context, NEW.next_action);
+            END
+        """)
+
+        # Add event_time to entities for bi-temporal tracking
+        # event_time = when the entity came into existence in the real world
+        # (vs created_at = when we recorded it in the DB)
+        try:
+            db.execute("ALTER TABLE entities ADD COLUMN event_time TEXT DEFAULT NULL")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+    run_migration(db, 11, "Commitments table + entity event_time", _migrate_commitments)
+
+    # --- Migration 12: Run records table for after-action review ---
+    def _migrate_run_records(db: sqlite3.Connection):
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS run_records (
+                id TEXT PRIMARY KEY,
+                goal TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                outcome TEXT NOT NULL DEFAULT 'pending',
+                outcome_details TEXT DEFAULT '',
+                context_snapshot TEXT DEFAULT '',
+                steps TEXT DEFAULT '[]',
+                model_used TEXT DEFAULT '',
+                model_tier TEXT DEFAULT '',
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                user_feedback_score INTEGER,
+                user_feedback_notes TEXT,
+                source TEXT DEFAULT '',
+                trigger TEXT DEFAULT '',
+                metadata TEXT
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_run_records_outcome ON run_records(outcome)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_run_records_started ON run_records(started_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_run_records_source ON run_records(source)")
+
+        # FTS for run records
+        db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS run_records_fts USING fts5(
+                goal, outcome_details,
+                content='run_records', content_rowid='rowid'
+            )
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS run_records_ai AFTER INSERT ON run_records BEGIN
+                INSERT INTO run_records_fts(rowid, goal, outcome_details)
+                VALUES (NEW.rowid, NEW.goal, NEW.outcome_details);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS run_records_ad AFTER DELETE ON run_records BEGIN
+                INSERT INTO run_records_fts(run_records_fts, rowid, goal, outcome_details)
+                VALUES ('delete', OLD.rowid, OLD.goal, OLD.outcome_details);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS run_records_au AFTER UPDATE ON run_records BEGIN
+                INSERT INTO run_records_fts(run_records_fts, rowid, goal, outcome_details)
+                VALUES ('delete', OLD.rowid, OLD.goal, OLD.outcome_details);
+                INSERT INTO run_records_fts(rowid, goal, outcome_details)
+                VALUES (NEW.rowid, NEW.goal, NEW.outcome_details);
+            END
+        """)
+
+    run_migration(db, 12, "Run records table for after-action review", _migrate_run_records)
+
     # Record / verify embedding model — must happen AFTER migration 7 creates the table
     import maasv
 
